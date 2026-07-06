@@ -11,7 +11,22 @@ test("seed eval dataset records satisfy public contracts", () => {
     .split("\n")
     .map((line) => JSON.parse(line));
 
-  assert.equal(records.length, 20);
+  assert.equal(records.length, 200);
+  assert.deepEqual(
+    records.reduce((counts, record) => {
+      counts[record.task] = (counts[record.task] || 0) + 1;
+      return counts;
+    }, {}),
+    {
+      classification: 50,
+      regression: 35,
+      forecasting: 35,
+      recommendation: 25,
+      clustering: 20,
+      multi_component_system: 35
+    }
+  );
+  assert.ok(records.filter((record) => record.dataset_profile).length >= 140);
 
   for (const record of records) {
     assert.ok(record.id);
