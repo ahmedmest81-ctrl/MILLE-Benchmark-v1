@@ -1,213 +1,85 @@
----
-title: MILLE ModelBlueprint
-emoji: 🧭
-colorFrom: blue
-colorTo: green
-sdk: docker
-app_port: 7860
----
+# MILLE Benchmark Report
 
-# ModelBlueprint
+Provider: local-engine
+Generated: 2026-07-06T19:47:19.894Z
+Overall: PASS
 
-ModelBlueprint is evolving into MILLE: a Machine Learning Logic Engine. It turns a plain-language project idea and an optional CSV into a blueprint with:
+## Gate Checks
 
-- ML task framing
-- Multi-component ML system detection
-- Decision trace output
-- Recommended model path
-- Data contract
-- Statistics and optimization formulas
-- Executable dataset checks, such as majority-class baselines and constant predictors
-- Retrieved source-backed ML knowledge
-- Starter Python files
-- Agent-ready JSON instructions
+| Metric | Value | Threshold | Result |
+| --- | ---: | ---: | --- |
+| overall_score | 95.8% | 85.0% | pass |
+| contract_pass_rate | 100.0% | 100.0% | pass |
+| task_correctness_rate | 98.0% | 95.0% | pass |
+| must_have_coverage | 99.3% | 90.0% | pass |
+| failure_avoidance | 95.8% | 95.0% | pass |
+| hard_case_score | 96.7% | 75.0% | pass |
 
-Open `index.html` in a browser to try the prototype, or run the local server:
+## Score By Task
 
-```powershell
-cd <repo>
-& ".\start-modelblueprint.ps1"
-```
+| Task | Records | Score |
+| --- | ---: | ---: |
+| classification | 50 | 98.1% |
+| clustering | 20 | 80.0% |
+| forecasting | 35 | 100.0% |
+| multi_component_system | 35 | 91.4% |
+| recommendation | 25 | 100.0% |
+| regression | 35 | 98.9% |
 
-Then open `http://127.0.0.1:4173`.
+## Score By Domain
 
-If that port is already in use:
+| Domain | Records | Score |
+| --- | ---: | ---: |
+| ads | 1 | 85.0% |
+| banking | 14 | 96.4% |
+| commerce | 5 | 100.0% |
+| customer_support | 13 | 98.1% |
+| education | 11 | 94.5% |
+| energy | 13 | 98.5% |
+| finance | 9 | 93.3% |
+| fintech | 1 | 95.0% |
+| fleet | 1 | 95.0% |
+| healthcare | 17 | 95.0% |
+| hr | 1 | 80.0% |
+| insurance | 9 | 97.8% |
+| legal_ops | 4 | 100.0% |
+| logistics | 13 | 97.3% |
+| manufacturing | 12 | 92.9% |
+| marketing | 5 | 99.0% |
+| media | 4 | 100.0% |
+| payments | 5 | 100.0% |
+| real_estate | 5 | 100.0% |
+| retail | 17 | 98.8% |
+| saas | 9 | 99.4% |
+| security | 13 | 80.0% |
+| supply_chain | 7 | 100.0% |
+| telecom | 11 | 94.5% |
 
-```powershell
-& ".\start-modelblueprint.ps1" -Port 4174
-```
+## Top Failed Checks
 
-Then open `http://127.0.0.1:4174`.
+| Check | Count |
+| --- | ---: |
+| should_have_rubric | 58 |
+| failure_avoidance | 25 |
+| must_have_rubric | 6 |
+| task_correctness | 4 |
 
-## Backend API
+## Worst Records
 
-The server exposes:
+| Record | Task | Domain | Score |
+| --- | --- | --- | ---: |
+| generated_multi_component_006 | multi_component_system | security | 60.0% |
+| generated_multi_component_014 | multi_component_system | security | 60.0% |
+| generated_multi_component_022 | multi_component_system | security | 60.0% |
+| generated_multi_component_030 | multi_component_system | security | 60.0% |
+| credit_default_001 | classification | banking | 65.0% |
+| claims_severity_001 | regression | insurance | 80.0% |
+| security_anomaly_001 | clustering | security | 80.0% |
+| hr_attrition_001 | classification | hr | 80.0% |
+| generated_clustering_001 | clustering | security | 80.0% |
+| generated_clustering_002 | clustering | manufacturing | 80.0% |
 
-```text
-POST /api/analyze-dataset
-POST /api/blueprint
-POST /api/export-project
-```
+## Recommended Next Fixes
 
-Example body:
-
-```json
-{
-  "idea": "recommend products from user purchase history",
-  "task": "auto",
-  "audience": "business"
-}
-```
-
-The response includes `retrieved_knowledge`, which is the current local RAG layer. It retrieves curated ML knowledge chunks from `knowledge-base.mjs`, including source URLs, formulas, assumptions, implementation notes, and pitfalls.
-
-`POST /api/export-project` accepts the same body and returns a `.zip` containing:
-
-- `project/data/`
-- `project/notebooks/`
-- `project/src/`
-- `project/tests/`
-- `project/README.md`
-- `project/schema.yaml`
-- `project/requirements.txt`
-- `project/agent_spec.json`
-- `project/retrieved_knowledge.json`
-- `project/blueprint.md`
-
-When a dataset profile is provided, the ZIP also includes:
-
-- `project/data/training.csv`
-- `project/data/SOURCE_FILENAME.txt`
-- `project/data_profile.json`
-- `project/src/preprocessing.py`
-- `project/DATASET_PROFILE.md`
-
-## Dataset-Aware Blueprinting
-
-Upload a CSV in the app to call `POST /api/analyze-dataset`.
-
-The profiler detects:
-
-- Row and column counts
-- Numeric, categorical, date, text, and ID columns
-- Missing-value ratios
-- Cardinality
-- Candidate target columns
-- Possible leakage and data-quality warnings
-
-The generated blueprint then uses that profile to:
-
-- Recommend a task type from the idea plus dataset shape
-- Compute baseline consequences from the uploaded data
-- Fill `schema.yaml` with actual columns
-- Generate `preprocessing.py` with explicit feature lists
-- Generate supervised training code with the inferred target
-- Export `data_profile.json` with the project ZIP
-
-## Executable Math Layer
-
-The math layer is designed to produce computed facts, not just text that an LLM can ignore.
-
-For classification datasets, the profiler computes a majority-class baseline from the actual target column:
-
-```text
-majority_accuracy = count(majority_class) / total_rows
-recall[class] = true_positive[class] / actual_count[class]
-```
-
-If a CSV has 94 non-churn rows and 6 churn rows, the executable check returns:
-
-```json
-{
-  "majority_accuracy": 0.94,
-  "minority_recall": 0,
-  "macro_recall": 0.5,
-  "executable_consequence": "Accuracy is unsafe as a primary metric: a majority-class predictor reaches 0.94 accuracy while minority-class recall is 0."
-}
-```
-
-That result is included in `dataset_profile.executable_checks`, the generated blueprint summary, the exported `DATASET_PROFILE.md`, and the AI refinement prompt. The model therefore has to route around the computed consequence by recommending better metrics, splits, thresholds, and acceptance tests.
-
-For regression datasets, the profiler computes mean and median constant baselines with MAE and RMSE. For forecasting datasets, it computes a previous-value baseline when a date column and numeric target are available.
-
-## Current Scope
-
-The first version supports five task families:
-
-- Classification
-- Regression
-- Clustering
-- Time-series forecasting
-- Recommendation systems
-
-It also includes a multi-component architecture layer for broader operational systems. When an idea describes a platform rather than one model, ModelBlueprint can return:
-
-- `project_type: "multi_component_system"`
-- `decision_trace`
-- reusable component specs for classification, regression, forecasting, recommendation, optimization, anomaly detection, API, and dashboard components
-- a multi-component `agent_spec`
-
-It uses deterministic backend logic plus a local source-backed retrieval layer today. A future version can add embeddings, vector search, and an LLM generation layer on top of the same knowledge schema.
-
-## Semantic Retrieval
-
-The app supports OpenAI embeddings for semantic retrieval.
-
-Set your API key in PowerShell:
-
-```powershell
-$env:OPENAI_API_KEY = "your_api_key_here"
-```
-
-Build the local embeddings index:
-
-```powershell
-node .\scripts\index-knowledge.mjs
-```
-
-The index is written to:
-
-```text
-embeddings/knowledge-index.json
-```
-
-Runtime behavior:
-
-- If `embeddings/knowledge-index.json` exists and `OPENAI_API_KEY` is set, retrieval uses semantic vector search plus keyword scoring.
-- If the index or key is missing, retrieval falls back to keyword search and shows that status in the UI.
-
-Dry-run the indexer without calling OpenAI:
-
-```powershell
-node .\scripts\index-knowledge.mjs --dry-run
-```
-
-## AI Refinement
-
-The `AI` button calls:
-
-```text
-POST /api/ai-blueprint
-```
-
-It uses the deterministic blueprint plus retrieved knowledge as context, then asks OpenAI for:
-
-- Missing questions
-- Recommended adjustments
-- Implementation notes
-- Risk checks
-- Acceptance tests
-
-Default model:
-
-```text
-gpt-4.1-mini
-```
-
-Override it in PowerShell:
-
-```powershell
-$env:OPENAI_BLUEPRINT_MODEL = "your_preferred_model"
-```
-
-The AI refinement is optional. The app still works with deterministic blueprints, RAG retrieval, and ZIP export if this call is unavailable.
+- Start with the most frequent failed checks above and inspect the listed worst records.
+- Keep record-level JSON results for exact check details.

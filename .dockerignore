@@ -1,8 +1,0 @@
-.agents/
-.codex/
-.git/
-embeddings/
-output/
-tmp/
-*.zip
-node_modules/
