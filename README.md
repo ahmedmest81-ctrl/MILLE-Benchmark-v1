@@ -25,7 +25,7 @@ ModelBlueprint is evolving into MILLE: a Machine Learning Logic Engine. It turns
 Open `index.html` in a browser to try the prototype, or run the local server:
 
 ```powershell
-cd "C:\Users\ahmed\Documents\ML tool or dataset for llms that gets adopted by companies,"
+cd <repo>
 & ".\start-modelblueprint.ps1"
 ```
 
@@ -162,7 +162,7 @@ $env:OPENAI_API_KEY = "your_api_key_here"
 Build the local embeddings index:
 
 ```powershell
-& "C:\Users\ahmed\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" .\scripts\index-knowledge.mjs
+node .\scripts\index-knowledge.mjs
 ```
 
 The index is written to:
@@ -179,7 +179,7 @@ Runtime behavior:
 Dry-run the indexer without calling OpenAI:
 
 ```powershell
-& "C:\Users\ahmed\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" .\scripts\index-knowledge.mjs --dry-run
+node .\scripts\index-knowledge.mjs --dry-run
 ```
 
 ## AI Refinement

@@ -1,7 +1,7 @@
 # MILLE Benchmark Report
 
 Provider: local-engine
-Generated: 2026-07-06T19:36:40.845Z
+Generated: 2026-07-06T19:47:19.894Z
 Overall: PASS
 
 ## Gate Checks

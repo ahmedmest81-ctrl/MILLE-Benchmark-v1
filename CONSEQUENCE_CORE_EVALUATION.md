@@ -1,6 +1,6 @@
 # ModelBlueprint Consequence-Core Evaluation
 
-Compared against: `C:\Users\ahmed\Downloads\ModelBlueprint-consequence-core-SPEC-v2.md`
+Compared against: `ModelBlueprint-consequence-core-SPEC-v2.md`
 
 ## Verdict
 
@@ -15,7 +15,7 @@ That has now been fixed. Computed consequences now produce a `decision`, `conseq
 Verification command:
 
 ```powershell
-& "C:\Users\ahmed\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" --test tests/consequence-core.test.mjs
+node --test tests/consequence-core.test.mjs
 ```
 
 Current result:

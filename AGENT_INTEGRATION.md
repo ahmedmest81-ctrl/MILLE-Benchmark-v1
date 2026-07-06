@@ -11,7 +11,7 @@ MILLE is now shaped for three surfaces:
 Run the local MCP server:
 
 ```powershell
-& "C:\Users\ahmed\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" mcp-server.mjs
+node mcp-server.mjs
 ```
 
 The server uses newline-delimited JSON-RPC over stdio and exposes:

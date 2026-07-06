@@ -5,6 +5,7 @@ import { createEmbedding, hasOpenAIKey } from "./openai-embeddings.mjs";
 
 const INDEX_URL = new URL("./embeddings/knowledge-index.json", import.meta.url);
 const INDEX_PATH = fileURLToPath(INDEX_URL);
+const INDEX_DISPLAY_PATH = "embeddings/knowledge-index.json";
 
 let cachedIndex = null;
 
@@ -54,7 +55,7 @@ export function embeddingIndexStatus() {
   const index = loadIndex();
   return {
     available: Boolean(index),
-    path: INDEX_PATH,
+    path: INDEX_DISPLAY_PATH,
     model: index?.model || null,
     chunks: index?.chunks?.length || 0,
     openai_key_available: hasOpenAIKey()
