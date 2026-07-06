@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wellyes1-millie.hf.space/schemas/mille-blueprint.schema.json",
+  "title": "MILLE Blueprint",
+  "description": "Stable public contract for a MILLE generated ML system blueprint.",
+  "type": "object",
+  "required": [
+    "title",
+    "engine_name",
+    "project_type",
+    "task_type",
+    "audience",
+    "confidence",
+    "summary",
+    "data_contract",
+    "model_path",
+    "decision",
+    "decision_trace",
+    "consequences",
+    "retrieved_knowledge",
+    "agent_spec"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Optional explicit schema version. Missing means v1 for legacy outputs.",
+      "default": "1.0.0"
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "engine_name": { "type": "string", "minLength": 1 },
+    "project_type": {
+      "type": "string",
+      "enum": ["single_task", "multi_component_system"]
+    },
+    "task_type": {
+      "type": "string",
+      "enum": ["classification", "regression", "forecasting", "recommendation", "clustering", "optimization", "anomaly_detection", "dashboard", "api"]
+    },
+    "audience": { "type": "string", "minLength": 1 },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low", "needs_resolution", "High confidence", "Medium confidence", "Needs resolution"]
+    },
+    "signals": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "data_contract": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "model_path": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "formulas": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/formula" }
+    },
+    "decision": { "$ref": "#/$defs/decision" },
+    "decision_trace": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "components": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/component" }
+    },
+    "consequences": { "$ref": "#/$defs/consequenceSummary" },
+    "component_consequences": {
+      "anyOf": [{ "$ref": "#/$defs/consequenceSummary" }, { "type": "null" }]
+    },
+    "generated_questions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "retrieved_knowledge": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/knowledgeEntry" }
+    },
+    "dataset_profile": {
+      "anyOf": [
+        { "$ref": "./mille-dataset-profile.schema.json" },
+        { "type": "null" }
+      ]
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "project_tree": { "type": "string" },
+    "agent_spec": {
+      "type": "object",
+      "required": ["product", "engine_name", "task_type", "decision", "acceptance_criteria"],
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "decision": {
+      "type": "object",
+      "required": ["task_type", "objective", "primary_metric", "split_strategy", "features", "confidence"],
+      "additionalProperties": true,
+      "properties": {
+        "task_type": { "type": "string" },
+        "objective": { "type": "string" },
+        "primary_metric": { "type": "string" },
+        "split_strategy": { "type": "string" },
+        "features": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "target": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["high", "medium", "low", "needs_resolution"]
+        },
+        "requires_input_validation": { "type": "boolean" },
+        "input_constraints": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/inputConstraint" }
+        }
+      }
+    },
+    "inputConstraint": {
+      "type": "object",
+      "required": ["field", "kind", "rule", "nullable"],
+      "additionalProperties": true,
+      "properties": {
+        "field": { "type": "string" },
+        "kind": { "type": "string" },
+        "rule": { "type": "string" },
+        "nullable": { "type": "boolean" }
+      }
+    },
+    "formula": {
+      "type": "object",
+      "required": ["name", "expression"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "expression": { "type": "string" },
+        "when": { "type": "string" }
+      }
+    },
+    "component": {
+      "type": "object",
+      "required": ["id", "name", "task_type"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "task_type": { "type": "string" },
+        "target": { "type": "string" },
+        "features": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "consequenceSummary": {
+      "type": "object",
+      "required": ["verdict", "blocking", "all"],
+      "additionalProperties": true,
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": ["ok", "warn", "block", "needs_resolution"]
+        },
+        "blocking": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/consequence" }
+        },
+        "all": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/consequence" }
+        }
+      }
+    },
+    "consequence": {
+      "type": "object",
+      "required": ["id", "severity", "fired", "message", "computed", "questions"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string" },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "warn", "block"]
+        },
+        "fired": { "type": "boolean" },
+        "message": { "type": "string" },
+        "computed": { "type": "object" },
+        "remedy": { "type": "string" },
+        "questions": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "knowledgeEntry": {
+      "type": "object",
+      "required": ["id", "type", "title", "summary"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "source": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "label": { "type": "string" },
+            "url": { "type": "string" }
+          }
+        },
+        "retrieval_method": { "type": "string" }
+      }
+    }
+  }
+}

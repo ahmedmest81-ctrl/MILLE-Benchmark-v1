@@ -1,0 +1,6 @@
+embeddings/knowledge-index.json
+tmp/
+output/
+.agents/
+.codex/
+node_modules/
