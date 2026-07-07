@@ -89,6 +89,7 @@ function cleanGateAnswers(gateAnswers = {}) {
     accepted_gate_ids: Array.isArray(answers.accepted_gate_ids)
       ? answers.accepted_gate_ids.map(String)
       : [],
+    group_split_column: typeof answers.group_split_column === "string" ? answers.group_split_column.trim() : "",
     invalid_answers: invalidAnswers,
     leakage_field_known_before_prediction:
       answers.leakage_field_known_before_prediction && typeof answers.leakage_field_known_before_prediction === "object"
@@ -115,7 +116,30 @@ function normalizeLeakageAnswer(value) {
   return null;
 }
 
-function resolveGate(check, answers, decision) {
+function dateRangeForSignal(profile, signal) {
+  const lower = String(signal || "").toLowerCase();
+  const column = (profile?.columns || []).find((item) => String(item.name).toLowerCase() === lower);
+  if (!column?.date_min || !column?.date_max) return null;
+  const min = Date.parse(column.date_min);
+  const max = Date.parse(column.date_max);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+  return { column: column.name, min, max, minText: column.date_min, maxText: column.date_max };
+}
+
+function cutoffDateIssue({ profile, check, cutoffDate }) {
+  if (!cutoffDate) return "";
+  const cutoff = Date.parse(cutoffDate);
+  if (!Number.isFinite(cutoff)) return "";
+  const ranges = (check.computed?.date_signals || [])
+    .map((signal) => dateRangeForSignal(profile, signal))
+    .filter(Boolean);
+  if (!ranges.length) return "";
+  const outside = ranges.find((range) => cutoff <= range.min || cutoff >= range.max);
+  if (!outside) return "";
+  return `Cutoff date ${cutoffDate} must fall strictly inside ${outside.column}'s observed range (${outside.minText} to ${outside.maxText}) so train and test are both non-empty.`;
+}
+
+function resolveGate(check, answers, decision, { profile = null } = {}) {
   if (!check?.fired) return check;
 
   if (hasAcceptedGate(answers, check.id)) {
@@ -156,10 +180,23 @@ function resolveGate(check, answers, decision) {
   }
 
   if (check.id === "split-validity") {
+    const cutoffIssue = cutoffDateIssue({ profile, check, cutoffDate: answers.cutoff_date });
+    if (cutoffIssue) {
+      return {
+        ...check,
+        resolution_status: "blocking",
+        resolution_note: cutoffIssue
+      };
+    }
+    const needsGroupColumn = (check.computed?.group_signals || []).length > 0;
+    if (needsGroupColumn && answers.group_split_column) {
+      decision.group_split_column = answers.group_split_column;
+    }
     if (answers.cutoff_date || answers.prediction_horizon) {
       decision.split_resolution = {
         cutoff_date: answers.cutoff_date || null,
-        prediction_horizon: answers.prediction_horizon || null
+        prediction_horizon: answers.prediction_horizon || null,
+        group_split_column: decision.group_split_column || null
       };
       return {
         ...check,
@@ -170,12 +207,29 @@ function resolveGate(check, answers, decision) {
         })
       };
     }
+    if (needsGroupColumn && answers.group_split_column) {
+      decision.split_resolution = {
+        cutoff_date: null,
+        prediction_horizon: null,
+        group_split_column: answers.group_split_column
+      };
+      return {
+        ...check,
+        ...gateResolution({
+          status: "resolved",
+          note: "A group split column was supplied for group-aware validation.",
+          answers: decision.split_resolution
+        })
+      };
+    }
     return {
       ...check,
       resolution_status: "blocking",
-      resolution_note: answers.invalid_answers.cutoff_date
-        ? "Supply a valid cutoff date or prediction horizon to resolve this gate."
-        : "Supply a cutoff date or prediction horizon to resolve this gate."
+      resolution_note: needsGroupColumn
+        ? "Supply the entity/group column to use for group-aware validation, and a cutoff or horizon too if time signals are present."
+        : answers.invalid_answers.cutoff_date
+          ? "Supply a valid cutoff date or prediction horizon to resolve this gate."
+          : "Supply a cutoff date or prediction horizon to resolve this gate."
     };
   }
 
@@ -387,24 +441,71 @@ function dateSignals({ claims, profile }) {
   return Array.from(new Set(signals));
 }
 
+function groupSignals({ profile }) {
+  const inferred = profile?.inferred?.group_columns || [];
+  const warningColumns = (profile?.split_warnings || [])
+    .filter((warning) => /GroupKFold|GroupShuffleSplit|group-aware/i.test(warning.reason || ""))
+    .map((warning) => warning.column);
+  return Array.from(new Set([...inferred, ...warningColumns].filter(Boolean)));
+}
+
 export function buildSplitValidityCheck({
   signals = [],
+  groupSignals: entitySignals = [],
   splitStrategy = "random",
   id = "split-validity",
   context = "the idea/data"
 } = {}) {
   const dateSignals = Array.from(new Set((signals || []).filter(Boolean)));
-  const fired = dateSignals.length > 0 && splitStrategy === "random";
+  const entityGroupSignals = Array.from(new Set((entitySignals || []).filter(Boolean)));
+  const temporalConflict = dateSignals.length > 0 && splitStrategy === "random";
+  const groupConflict = entityGroupSignals.length > 0 && !["group", "temporal_group"].includes(splitStrategy);
+  const fired = temporalConflict || groupConflict;
   if (!fired) {
     return result({
       id,
       fired: false,
-      message: `No random split conflict with time structure was detected for ${context}.`,
+      message: `No random split conflict with time or repeated-entity structure was detected for ${context}.`,
       computed: {
         date_signals: dateSignals,
+        group_signals: entityGroupSignals,
         split_strategy: splitStrategy,
         shared_check: "split-validity"
       }
+    });
+  }
+
+  if (temporalConflict && !groupConflict) {
+    return result({
+      id,
+      severity: "block",
+      fired: true,
+      message: `Random train/test split is invalid for ${context} because it contains time signal(s): ${dateSignals.join(", ")}.`,
+      computed: {
+        date_signals: dateSignals,
+        group_signals: entityGroupSignals,
+        previous_split: splitStrategy,
+        shared_check: "split-validity"
+      },
+      remedy: "Use temporal validation such as a cutoff date, rolling split, or TimeSeriesSplit.",
+      questions: ["Cutoff date separating train/test?", "Prediction horizon?"]
+    });
+  }
+
+  if (groupConflict && !temporalConflict) {
+    return result({
+      id,
+      severity: "block",
+      fired: true,
+      message: `${splitStrategy === "random" ? "Random" : "Current"} train/test split is invalid for ${context} because rows repeat entity/group value(s): ${entityGroupSignals.join(", ")}.`,
+      computed: {
+        date_signals: dateSignals,
+        group_signals: entityGroupSignals,
+        previous_split: splitStrategy,
+        shared_check: "split-validity"
+      },
+      remedy: "Use group-aware validation such as GroupKFold or GroupShuffleSplit so the same entity never appears in both train and test.",
+      questions: [`Group column for validation (${entityGroupSignals[0] || "entity_id"})?`]
     });
   }
 
@@ -412,20 +513,21 @@ export function buildSplitValidityCheck({
     id,
     severity: "block",
     fired: true,
-    message: `Random train/test split is invalid for ${context} because it contains time signal(s): ${dateSignals.join(", ")}.`,
+    message: `Random train/test split is invalid for ${context} because it contains time signal(s): ${dateSignals.join(", ")} and repeated entity/group value(s): ${entityGroupSignals.join(", ")}.`,
     computed: {
       date_signals: dateSignals,
-      previous_split: "random",
+      group_signals: entityGroupSignals,
+      previous_split: splitStrategy,
       shared_check: "split-validity"
     },
-    remedy: "Use temporal validation such as a cutoff date, rolling split, or TimeSeriesSplit.",
-    questions: ["Cutoff date separating train/test?", "Prediction horizon?"]
+    remedy: "Use temporal validation with group-aware boundaries, such as an out-of-time holdout that keeps each entity in only one split.",
+    questions: ["Cutoff date separating train/test?", "Prediction horizon?", `Group column for validation (${entityGroupSignals[0] || "entity_id"})?`]
   });
 }
 
 function isActionableLeakageWarn(warning) {
   const reason = String(warning?.reason || "");
-  return /aggregate-style name|alone predicts|Column name suggests/i.test(reason);
+  return /aggregate-style name|alone predicts|alone reproduces|Column name suggests/i.test(reason);
 }
 
 function profileLeakageCandidates(profile) {
@@ -478,14 +580,24 @@ function metricValidity({ claims, profile, decision }) {
 
 function splitValidity({ claims, profile, decision }) {
   const signals = dateSignals({ claims, profile });
+  const entitySignals = groupSignals({ profile });
   const check = buildSplitValidityCheck({
     signals,
+    groupSignals: entitySignals,
     splitStrategy: decision.split_strategy,
     context: "the idea/data"
   });
   if (!check.fired) return check;
 
-  decision.split_strategy = "temporal";
+  if (check.computed?.date_signals?.length && check.computed?.group_signals?.length) {
+    decision.split_strategy = "temporal_group";
+    decision.group_split_column = check.computed.group_signals[0];
+  } else if (check.computed?.group_signals?.length) {
+    decision.split_strategy = "group";
+    decision.group_split_column = check.computed.group_signals[0];
+  } else {
+    decision.split_strategy = "temporal";
+  }
   decision.confidence = "needs_resolution";
   return check;
 }
@@ -660,7 +772,7 @@ export function evaluateBlueprint({ claims = {}, profile = null, draft = {}, gat
     targetLeakage({ claims, profile, decision }),
     identifiableTargetGate({ claims, profile, decision, projectType }),
     dataContractGate({ claims, profile, decision })
-  ].map((check) => resolveGate(check, answers, decision));
+  ].map((check) => resolveGate(check, answers, decision, { profile }));
   const generatedQuestions = [];
   const blocking = checks.filter(
     (check) =>

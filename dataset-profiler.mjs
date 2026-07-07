@@ -25,6 +25,66 @@ const TARGET_HINTS = [
 const DATE_HINTS = ["date", "time", "timestamp", "created", "updated", "week", "month", "day"];
 const ID_HINTS = ["id", "uuid", "guid", "key"];
 const LEAKAGE_HINTS = ["future", "post", "after", "outcome", "result", "label", "target", "leak"];
+const ENTITY_HINTS = [
+  "account",
+  "applicant",
+  "borrower",
+  "buyer",
+  "card",
+  "client",
+  "company",
+  "customer",
+  "device",
+  "household",
+  "merchant",
+  "member",
+  "organization",
+  "org",
+  "patient",
+  "seller",
+  "store",
+  "tenant",
+  "user"
+];
+const PII_NAME_PATTERNS = [
+  /\bemail\b/,
+  /\be_?mail\b/,
+  /\bphone\b/,
+  /\bmobile\b/,
+  /\bssn\b/,
+  /\bsocial_?security\b/,
+  /\bfull_?name\b/,
+  /\bfirst_?name\b/,
+  /\blast_?name\b/,
+  /\baddress\b/,
+  /\bip_?address\b/
+];
+const PROTECTED_NAME_PATTERNS = [
+  /\bage\b/,
+  /\bdate_?of_?birth\b/,
+  /\bdob\b/,
+  /\brace\b/,
+  /\bethnicity\b/,
+  /\bgender\b/,
+  /\bsex\b/,
+  /\breligion\b/,
+  /\bdisability\b/,
+  /\bmarital_?status\b/,
+  /\bnationality\b/,
+  /\bcitizenship\b/,
+  /\bveteran_?status\b/
+];
+const PROXY_NAME_PATTERNS = [
+  /\bzip\b/,
+  /\bzip_?code\b/,
+  /\bpostal_?code\b/,
+  /\bpostcode\b/,
+  /\bcensus_?tract\b/,
+  /\bneighbou?rhood\b/,
+  /\bgeo_?hash\b/
+];
+const TINY_SAMPLE_ROWS = 30;
+const LOW_SAMPLE_ROWS = 100;
 
 function parseCsvLine(line, delimiter) {
   const cells = [];
@@ -95,6 +155,44 @@ function isDate(value) {
   if (isMissing(value) || isNumeric(value)) return false;
   const parsed = Date.parse(String(value).trim());
   return Number.isFinite(parsed);
+}
+
+function valueCounts(values) {
+  const counts = new Map();
+  for (const value of values) {
+    if (isMissing(value)) continue;
+    const key = String(value).trim();
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return counts;
+}
+
+function distributionStats(values, rowCount) {
+  const counts = valueCounts(values);
+  const presentCount = Array.from(counts.values()).reduce((total, count) => total + count, 0);
+  const countValues = Array.from(counts.values());
+  const dominantValueCount = countValues.length ? Math.max(...countValues) : 0;
+  const repeatedValueCount = countValues.filter((count) => count > 1).length;
+  const repeatedRowCount = countValues.filter((count) => count > 1).reduce((total, count) => total + count, 0);
+  return {
+    dominant_value_count: dominantValueCount,
+    dominant_value_ratio: presentCount === 0 ? 0 : roundMetric(dominantValueCount / presentCount),
+    repeated_value_count: repeatedValueCount,
+    repeated_row_count: repeatedRowCount,
+    repeated_row_ratio: rowCount === 0 ? 0 : roundMetric(repeatedRowCount / rowCount)
+  };
+}
+
+function dateStats(values) {
+  const timestamps = values
+    .filter((value) => !isMissing(value) && isDate(value))
+    .map((value) => Date.parse(String(value).trim()))
+    .filter((value) => Number.isFinite(value));
+  if (!timestamps.length) return {};
+  return {
+    date_min: new Date(Math.min(...timestamps)).toISOString(),
+    date_max: new Date(Math.max(...timestamps)).toISOString()
+  };
 }
 
 function numericStats(values) {
@@ -365,12 +463,16 @@ export function valueBasedLeakageWarnings(columns, rows, targetName) {
       const accuracy = singleColumnLookupAccuracy(columnValues, targetValues);
       if (accuracy == null) return [];
       const lift = accuracy - baseline;
+      const tinySample = rows.length < TINY_SAMPLE_ROWS;
+      const sampleNote = tinySample
+        ? ` Only ${rows.length} rows were available, so this is a low-confidence statistical signal rather than a standalone blocker.`
+        : "";
       if (accuracy >= 0.97 && lift >= 0.1) {
         return [
           {
             column: column.name,
-            severity: "block",
-            reason: `${column.name} alone reproduces ${targetName} with ~${(accuracy * 100).toFixed(1)}% accuracy on this sample (majority baseline ${(baseline * 100).toFixed(1)}%). This is a strong statistical signature of target leakage.`
+            severity: tinySample ? "warn" : "block",
+            reason: `${column.name} alone reproduces ${targetName} with ~${(accuracy * 100).toFixed(1)}% accuracy on this sample (majority baseline ${(baseline * 100).toFixed(1)}%). This is a strong statistical signature of target leakage.${sampleNote}`
           }
         ];
       }
@@ -379,7 +481,7 @@ export function valueBasedLeakageWarnings(columns, rows, targetName) {
           {
             column: column.name,
             severity: "warn",
-            reason: `${column.name} alone predicts ${targetName} with ~${(accuracy * 100).toFixed(1)}% accuracy on this sample (majority baseline ${(baseline * 100).toFixed(1)}%); confirm this value is known before prediction.`
+            reason: `${column.name} alone predicts ${targetName} with ~${(accuracy * 100).toFixed(1)}% accuracy on this sample (majority baseline ${(baseline * 100).toFixed(1)}%); confirm this value is known before prediction.${sampleNote}`
           }
         ];
       }
@@ -553,7 +655,231 @@ function targetQualityWarnings(target) {
   return [];
 }
 
-export function analyzeDataset({ csvText, filename = "uploaded.csv", idea = "" }) {
+function normalizedName(name) {
+  return String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function nameMatches(name, patterns) {
+  const normalized = normalizedName(name);
+  const spaced = normalized.replace(/_/g, " ");
+  return patterns.some((pattern) => pattern.test(normalized) || pattern.test(spaced));
+}
+
+function isEntityLikeColumn(column) {
+  const lower = normalizedName(column.name);
+  const tokens = lower.split("_").filter(Boolean);
+  const descriptorToken = tokens[tokens.length - 1] || "";
+  const entityDescriptor =
+    tokens.length > 1 &&
+    ENTITY_HINTS.some((hint) => tokens[0] === hint) &&
+    /^(band|category|class|country|flag|group|level|region|risk|score|segment|status|tier|type)$/.test(descriptorToken);
+  if (entityDescriptor) return false;
+  const idLike = ID_HINTS.some(
+    (hint) => lower === hint || lower.endsWith(`_${hint}`) || lower.includes(`${hint}_`)
+  );
+  const entityLike = ENTITY_HINTS.some(
+    (hint) => tokens.includes(hint) || lower.startsWith(`${hint}_`) || lower.endsWith(`_${hint}`)
+  );
+  return column.kind === "id" || idLike || entityLike;
+}
+
+function groupSplitWarnings(columns, targetName) {
+  return columns
+    .filter((column) => column.name !== targetName)
+    .filter((column) => isEntityLikeColumn(column))
+    .filter((column) => column.non_missing_count >= 4 && column.unique_count > 1 && column.repeated_row_count > 0)
+    .filter((column) => column.unique_count < column.non_missing_count)
+    .filter((column) => column.kind === "id" || column.unique_count >= Math.max(2, Math.ceil(column.non_missing_count * 0.2)))
+    .map((column) => ({
+      column: column.name,
+      severity: "block",
+      reason: `${column.name} has repeated entity/group values (${column.repeated_row_count}/${column.non_missing_count} rows share repeated values; largest group ${column.dominant_value_count}). A random split can put the same entity in train and test; use GroupKFold or GroupShuffleSplit with ${column.name}.`
+    }));
+}
+
+function sampleSizeWarnings({ rowCount, columns, target, recommendedTask }) {
+  const featureCount = columns.filter((column) => column.name !== target?.name && column.kind !== "id").length;
+  const warnings = [];
+  if (rowCount < TINY_SAMPLE_ROWS) {
+    warnings.push({
+      column: "dataset",
+      severity: "warn",
+      reason: `Only ${rowCount} rows were profiled; leakage heuristics, class balance, and feature statistics are low-confidence on tiny samples.`
+    });
+  } else if (rowCount < LOW_SAMPLE_ROWS && featureCount > 0 && rowCount < featureCount * 10) {
+    warnings.push({
+      column: "dataset",
+      severity: "warn",
+      reason: `${rowCount} rows for ${featureCount} candidate features is a thin sample; validate profiler findings on more data before trusting model quality estimates.`
+    });
+  }
+  if (recommendedTask === "classification" && target && target.non_missing_count > 0 && rowCount < LOW_SAMPLE_ROWS) {
+    warnings.push({
+      column: target.name,
+      severity: "warn",
+      reason: `Classification target ${target.name} is profiled on ${target.non_missing_count} rows; class-balance and lookup-leakage checks need a larger validation sample for reliable thresholds.`
+    });
+  }
+  return warnings;
+}
+
+function featureVarianceWarnings(columns, targetName) {
+  return columns
+    .filter((column) => column.name !== targetName && column.non_missing_count > 0)
+    .flatMap((column) => {
+      if (column.unique_count <= 1) {
+        return [
+          {
+            column: column.name,
+            severity: "warn",
+            reason: `${column.name} has zero variance across observed rows and will not add predictive signal.`
+          }
+        ];
+      }
+      if (column.non_missing_count >= LOW_SAMPLE_ROWS && column.dominant_value_ratio >= 0.98) {
+        return [
+          {
+            column: column.name,
+            severity: "warn",
+            reason: `${column.name} is near-zero variance: the most common value covers ${(column.dominant_value_ratio * 100).toFixed(1)}% of non-missing rows.`
+          }
+        ];
+      }
+      return [];
+    });
+}
+
+function highCardinalityWarnings(columns, targetName, rowCount) {
+  return columns
+    .filter((column) => column.name !== targetName && column.kind === "categorical")
+    .filter((column) => column.unique_count >= 50 && column.unique_ratio >= 0.2)
+    .map((column) => ({
+      column: column.name,
+      severity: "warn",
+      reason: `${column.name} has ${column.unique_count} distinct categories across ${rowCount} rows; one-hot encoding may explode dimensionality, so consider frequency, target, or hashing encoders.`
+    }));
+}
+
+function piiValueEvidence(values) {
+  let email = 0;
+  let phone = 0;
+  let ssn = 0;
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (!text) continue;
+    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(text)) email += 1;
+    if (/^\+?[0-9][0-9 .()/-]{7,}[0-9]$/.test(text)) phone += 1;
+    if (/^\d{3}-?\d{2}-?\d{4}$/.test(text)) ssn += 1;
+  }
+  if (email > 0) return "email-shaped values";
+  if (ssn > 0) return "SSN-shaped values";
+  if (phone > 0) return "phone-number-shaped values";
+  return "";
+}
+
+function sensitiveAttributeWarnings(columns, rows) {
+  return columns.flatMap((column) => {
+    const values = rows.map((row) => row.find(([header]) => header === column.name)?.[1] ?? "");
+    const warnings = [];
+    const piiEvidence = nameMatches(column.name, PII_NAME_PATTERNS) ? "PII-shaped column name" : piiValueEvidence(values);
+    if (piiEvidence) {
+      warnings.push({
+        column: column.name,
+        severity: "warn",
+        reason: `${column.name} looks like direct PII (${piiEvidence}); confirm retention, masking, and model-input legality before using it.`
+      });
+    }
+    if (nameMatches(column.name, PROTECTED_NAME_PATTERNS)) {
+      warnings.push({
+        column: column.name,
+        severity: "warn",
+        reason: `${column.name} looks like a protected or sensitive attribute; confirm fairness, anti-discrimination, and regulatory treatment before using it as a feature.`
+      });
+    }
+    if (nameMatches(column.name, PROXY_NAME_PATTERNS)) {
+      warnings.push({
+        column: column.name,
+        severity: "warn",
+        reason: `${column.name} can act as a protected-attribute proxy; document compliance approval before using it in model inputs.`
+      });
+    }
+    return warnings;
+  });
+}
+
+function rowValue(row, header) {
+  return row.find(([candidate]) => candidate === header)?.[1] ?? "";
+}
+
+function rowFingerprint(row, headers) {
+  return JSON.stringify(headers.map((header) => normalizeCell(rowValue(row, header))));
+}
+
+function overlapProfile({ trainHeaders, trainRows, holdoutCsvText, holdoutFilename, targetName }) {
+  if (!holdoutCsvText) return null;
+  const holdout = parseCsv(holdoutCsvText);
+  const holdoutHeaderSet = new Set(holdout.headers);
+  const commonHeaders = trainHeaders.filter((header) => holdoutHeaderSet.has(header));
+  const featureHeaders = commonHeaders.filter((header) => header !== targetName);
+  if (!commonHeaders.length) {
+    return {
+      holdout_filename: holdoutFilename,
+      holdout_row_count: holdout.rows.length,
+      compared_columns: [],
+      feature_columns_compared: [],
+      exact_duplicate_rows: 0,
+      exact_duplicate_ratio: 0,
+      feature_duplicate_rows: 0,
+      feature_duplicate_ratio: 0
+    };
+  }
+  const trainExact = new Set(trainRows.map((row) => rowFingerprint(row, commonHeaders)));
+  const trainFeatures = featureHeaders.length
+    ? new Set(trainRows.map((row) => rowFingerprint(row, featureHeaders)))
+    : new Set();
+  const exactDuplicateRows = holdout.rows.filter((row) => trainExact.has(rowFingerprint(row, commonHeaders))).length;
+  const featureDuplicateRows = featureHeaders.length
+    ? holdout.rows.filter((row) => trainFeatures.has(rowFingerprint(row, featureHeaders))).length
+    : 0;
+  return {
+    holdout_filename: holdoutFilename,
+    holdout_row_count: holdout.rows.length,
+    compared_columns: commonHeaders,
+    feature_columns_compared: featureHeaders,
+    exact_duplicate_rows: exactDuplicateRows,
+    exact_duplicate_ratio: holdout.rows.length === 0 ? 0 : roundMetric(exactDuplicateRows / holdout.rows.length),
+    feature_duplicate_rows: featureDuplicateRows,
+    feature_duplicate_ratio: holdout.rows.length === 0 ? 0 : roundMetric(featureDuplicateRows / holdout.rows.length)
+  };
+}
+
+function overlapWarnings(overlap) {
+  if (!overlap) return [];
+  const warnings = [];
+  if (overlap.exact_duplicate_rows > 0) {
+    warnings.push({
+      column: "train_test_overlap",
+      severity: "block",
+      reason: `${overlap.exact_duplicate_rows} holdout row(s) are exact duplicates of training rows across shared columns; this invalidates holdout evaluation.`
+    });
+  }
+  if (overlap.feature_duplicate_rows > overlap.exact_duplicate_rows) {
+    warnings.push({
+      column: "train_test_overlap",
+      severity: "block",
+      reason: `${overlap.feature_duplicate_rows} holdout row(s) duplicate training feature values across shared non-target columns; check for row/entity leakage across the train-test boundary.`
+    });
+  }
+  return warnings;
+}
+
+export function analyzeDataset({
+  csvText,
+  filename = "uploaded.csv",
+  idea = "",
+  holdoutCsvText = null,
+  holdoutFilename = "holdout.csv"
+} = {}) {
   const { delimiter, headers, rows } = parseCsv(csvText);
   const rowCount = rows.length;
   const columns = headers.map((header, index) => {
@@ -566,6 +892,8 @@ export function analyzeDataset({ csvText, filename = "uploaded.csv", idea = "" }
       index,
       kind,
       ...numericStats(values),
+      ...dateStats(values),
+      ...distributionStats(values, rowCount),
       missing_count: rowCount - present.length,
       missing_ratio: rowCount === 0 ? 0 : Number(((rowCount - present.length) / rowCount).toFixed(4)),
       unique_count: uniqueValues.length,
@@ -592,6 +920,17 @@ export function analyzeDataset({ csvText, filename = "uploaded.csv", idea = "" }
   const recommendedTask = recommendTask({ idea, columns, target });
   const featureColumns = columns.filter((column) => column.name !== target?.name && column.kind !== "id");
   const dateColumns = columns.filter((column) => column.kind === "date").map((column) => column.name);
+  const splitWarnings = groupSplitWarnings(columns, target?.name);
+  const groupColumns = splitWarnings.map((warning) => warning.column);
+  const groupColumnSet = new Set(groupColumns);
+  const modelingFeatureColumns = featureColumns.filter((column) => !groupColumnSet.has(column.name));
+  const holdoutOverlap = overlapProfile({
+    trainHeaders: headers,
+    trainRows: rows,
+    holdoutCsvText,
+    holdoutFilename,
+    targetName: target?.name
+  });
   const checks = executableChecks({ recommendedTask, target, rows, dateColumns });
   const executableWarnings = checks
     .filter((check) => check.executable_consequence)
@@ -611,7 +950,15 @@ export function analyzeDataset({ csvText, filename = "uploaded.csv", idea = "" }
       severity: "warn",
       reason: `High missing ratio: ${(column.missing_ratio * 100).toFixed(1)}%.`
     }))
-    .concat(targetQualityWarnings(target), executableWarnings);
+    .concat(
+      targetQualityWarnings(target),
+      sampleSizeWarnings({ rowCount, columns, target, recommendedTask }),
+      featureVarianceWarnings(columns, target?.name),
+      highCardinalityWarnings(columns, target?.name, rowCount),
+      sensitiveAttributeWarnings(columns, rows),
+      overlapWarnings(holdoutOverlap),
+      executableWarnings
+    );
 
   return {
     filename,
@@ -624,16 +971,22 @@ export function analyzeDataset({ csvText, filename = "uploaded.csv", idea = "" }
       task_type: recommendedTask,
       id_columns: columns.filter((column) => column.kind === "id").map((column) => column.name),
       date_columns: dateColumns,
-      numeric_features: featureColumns.filter((column) => column.kind === "numeric").map((column) => column.name),
-      categorical_features: featureColumns
+      numeric_features: modelingFeatureColumns.filter((column) => column.kind === "numeric").map((column) => column.name),
+      categorical_features: modelingFeatureColumns
         .filter((column) => ["categorical", "boolean"].includes(column.kind))
         .map((column) => column.name),
-      text_features: featureColumns.filter((column) => column.kind === "text").map((column) => column.name),
-      excluded_features: columns.filter((column) => column.kind === "id").map((column) => column.name)
+      text_features: modelingFeatureColumns.filter((column) => column.kind === "text").map((column) => column.name),
+      excluded_features: Array.from(
+        new Set([...columns.filter((column) => column.kind === "id").map((column) => column.name), ...groupColumns])
+      ),
+      group_columns: groupColumns
     },
     executable_checks: checks,
     target_candidates: targetCandidates,
     leakage_warnings: leakage,
-    quality_warnings: qualityWarnings
+    quality_warnings: qualityWarnings,
+    split_warnings: splitWarnings,
+    holdout_overlap: holdoutOverlap,
+    analysis_confidence: rowCount < TINY_SAMPLE_ROWS ? "low" : rowCount < LOW_SAMPLE_ROWS ? "medium" : "high"
   };
 }

@@ -111,7 +111,7 @@ test("value-based leakage detection catches target proxies and respects confirme
   const warningColumns = profile.leakage_warnings.map((warning) => warning.column);
 
   assert.ok(
-    profile.leakage_warnings.some((warning) => warning.column === "collections_flag" && warning.severity === "block")
+    profile.leakage_warnings.some((warning) => warning.column === "collections_flag" && warning.severity === "warn")
   );
   assert.ok(
     profile.leakage_warnings.some((warning) => warning.column === "total_late_fees_charged" && warning.severity === "block")
@@ -155,7 +155,7 @@ test("target quantity terms do not bleed from unrelated idea feature prose", () 
 
   assert.ok(!warningColumns.includes("existing_loan_amount"));
   assert.ok(
-    profile.leakage_warnings.some((warning) => warning.column === "collections_flag" && warning.severity === "block")
+    profile.leakage_warnings.some((warning) => warning.column === "collections_flag" && warning.severity === "warn")
   );
   assert.ok(
     profile.leakage_warnings.some((warning) => warning.column === "total_late_fees_charged" && warning.severity === "block")

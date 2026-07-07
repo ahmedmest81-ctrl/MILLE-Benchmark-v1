@@ -655,6 +655,13 @@ function dateLikeFeatures(features = []) {
   return features.filter((feature) => /(date|time|timestamp|signup|created|_at)\b/i.test(feature));
 }
 
+function splitPolicy(decision = null) {
+  if (decision?.split_strategy === "temporal_group") return "grouped_time_based";
+  if (decision?.split_strategy === "temporal") return "time_based";
+  if (decision?.split_strategy === "group") return "group_based";
+  return "stratified_or_random";
+}
+
 function datasetSchema(profile, decision = null) {
   const inferred = profile.inferred || {};
   const required = profile.columns.filter((column) => column.missing_count === 0).map((column) => column.name);
@@ -677,7 +684,7 @@ function datasetSchema(profile, decision = null) {
   task_type: ${JSON.stringify(inferred.task_type || "classification")}
   entity_id:${yamlList(inferred.id_columns || [], 4)}
   date_columns:${yamlList(inferred.date_columns || [], 4)}
-  split_policy: ${decision?.split_strategy === "temporal" ? "time_based" : "stratified_or_random"}
+  split_policy: ${splitPolicy(decision)}
 
 features:
   numeric:${yamlList(numeric, 4)}
@@ -699,7 +706,7 @@ function decisionSchema(decision) {
   path: data/training.csv
   target: ${JSON.stringify(decision.target || "target")}
   task_type: ${JSON.stringify(decision.task_type || "classification")}
-  split_policy: ${decision.split_strategy === "temporal" ? "time_based" : "stratified_or_random"}
+  split_policy: ${splitPolicy(decision)}
 
 features:
   provided:${yamlList(features, 4)}
@@ -1002,17 +1009,30 @@ function randomSplitBlock(classifier) {
     )`;
 }
 
+function groupSplitBlock(decision, profile = null) {
+  const groupColumn = decision?.group_split_column || profile?.inferred?.group_columns?.[0] || "group_id";
+  return `    group_column = ${JSON.stringify(groupColumn)}
+    if group_column not in frame.columns:
+        raise ValueError(f"Group split column {group_column!r} not found in {DATA_PATH}.")
+    groups = frame[group_column]
+    splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+    train_idx, test_idx = next(splitter.split(X, y, groups=groups))
+    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]`;
+}
+
 function supervisedTrainPy(profile, taskKey, decision) {
   const target = decision?.target || profile.inferred?.target || "target";
   const classifier = taskKey === "classification";
-  const temporal = decision?.split_strategy === "temporal";
+  const temporal = decision?.split_strategy === "temporal" || decision?.split_strategy === "temporal_group";
+  const group = decision?.split_strategy === "group";
   return `from pathlib import Path
 
 import joblib
 import pandas as pd
 from sklearn.ensemble import HistGradientBoosting${classifier ? "Classifier" : "Regressor"}
 from sklearn.metrics import ${metricImport(decision || {}, classifier)}
-from sklearn.model_selection import ${temporal ? "TimeSeriesSplit" : "train_test_split"}
+from sklearn.model_selection import ${group ? "GroupShuffleSplit" : temporal ? "TimeSeriesSplit" : "train_test_split"}
 from sklearn.pipeline import Pipeline
 
 from preprocessing import CATEGORICAL_FEATURES, EXCLUDED_FEATURES, NUMERIC_FEATURES, build_preprocessor
@@ -1039,7 +1059,7 @@ def main():
     columns = feature_columns(frame)
     X = frame[columns]
     y = frame[TARGET]
-${temporal ? temporalSplitBlock(decision || {}) : randomSplitBlock(classifier)}
+${group ? groupSplitBlock(decision || {}, profile) : temporal ? temporalSplitBlock(decision || {}) : randomSplitBlock(classifier)}
 
     model = HistGradientBoosting${classifier ? "Classifier" : "Regressor"}(max_iter=250, learning_rate=0.06)
     pipeline = Pipeline([("preprocess", build_preprocessor()), ("model", model)])
@@ -1060,7 +1080,8 @@ if __name__ == "__main__":
 
 function genericSupervisedTrainPy(decision) {
   const classifier = decision.task_type === "classification";
-  const temporal = decision.split_strategy === "temporal";
+  const temporal = decision.split_strategy === "temporal" || decision.split_strategy === "temporal_group";
+  const group = decision.split_strategy === "group";
   return `from pathlib import Path
 
 import joblib
@@ -1069,7 +1090,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoosting${classifier ? "Classifier" : "Regressor"}
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import ${metricImport(decision, classifier)}
-from sklearn.model_selection import ${temporal ? "TimeSeriesSplit" : "train_test_split"}
+from sklearn.model_selection import ${group ? "GroupShuffleSplit" : temporal ? "TimeSeriesSplit" : "train_test_split"}
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
@@ -1095,7 +1116,7 @@ def main():
     columns = feature_columns(frame)
     X = frame[columns]
     y = frame[TARGET]
-${temporal ? temporalSplitBlock(decision) : randomSplitBlock(classifier)}
+${group ? groupSplitBlock(decision) : temporal ? temporalSplitBlock(decision) : randomSplitBlock(classifier)}
 
     preprocess = ColumnTransformer([
         ("cat", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("encoder", OneHotEncoder(handle_unknown="ignore"))]), columns)
@@ -1154,7 +1175,7 @@ required_action: ${JSON.stringify(gate?.remedy || "Name the exact target column 
 }
 
 function datasetReadme(profile) {
-  const warnings = [...(profile.leakage_warnings || []), ...(profile.quality_warnings || [])];
+  const warnings = [...(profile.leakage_warnings || []), ...(profile.quality_warnings || []), ...(profile.split_warnings || [])];
   return `# Dataset Profile
 
 Source file: ${profile.filename}

@@ -40,6 +40,7 @@ const agentTaskInputSchema = {
         minimum_recall: { type: "number", minimum: 0, maximum: 1 },
         cutoff_date: { type: "string" },
         prediction_horizon: { type: "string" },
+        group_split_column: { type: "string" },
         input_validation_acknowledged: { type: "boolean" },
         leakage_field_known_before_prediction: {
           type: "object",
@@ -70,7 +71,9 @@ export const tools = [
       properties: {
         csv_text: { type: "string", minLength: 1 },
         filename: { type: "string", default: "uploaded.csv" },
-        idea: { type: "string", default: "" }
+        idea: { type: "string", default: "" },
+        holdout_csv_text: { type: "string" },
+        holdout_filename: { type: "string", default: "holdout.csv" }
       }
     }
   },
@@ -289,7 +292,9 @@ export async function callTool(name, rawArgs) {
     const profile = analyzeDataset({
       csvText: args.csv_text,
       filename: args.filename || "uploaded.csv",
-      idea: args.idea || ""
+      idea: args.idea || "",
+      holdoutCsvText: args.holdout_csv_text || null,
+      holdoutFilename: args.holdout_filename || "holdout.csv"
     });
     return toolResult({ profile, contract: validateDatasetProfileContract(profile) });
   }
