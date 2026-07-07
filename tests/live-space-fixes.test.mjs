@@ -116,7 +116,7 @@ test("value-based leakage detection catches target proxies and respects confirme
   assert.ok(
     profile.leakage_warnings.some((warning) => warning.column === "total_late_fees_charged" && warning.severity === "block")
   );
-  assert.ok(warningColumns.includes("existing_loan_amount"));
+  assert.ok(!warningColumns.includes("existing_loan_amount"));
 
   const blueprint = generateBlueprint({
     idea,
@@ -145,4 +145,53 @@ test("value-based leakage detection catches target proxies and respects confirme
   assert.doesNotMatch(blueprint.files["train.py"], /"collections_flag"/);
   assert.doesNotMatch(blueprint.files["train.py"], /"total_late_fees_charged"/);
   assert.match(blueprint.files["preprocessing.py"], /"existing_loan_amount"/);
+});
+
+test("target quantity terms do not bleed from unrelated idea feature prose", () => {
+  const idea =
+    "Predict whether a bank loan applicant will default within 12 months, using applicant demographics, credit score, income, and loan repayment history so the bank can flag high-risk applications before approval.";
+  const profile = analyzeDataset({ csvText: loanDefaultCsv, filename: "loan_default.csv", idea });
+  const warningColumns = profile.leakage_warnings.map((warning) => warning.column);
+
+  assert.ok(!warningColumns.includes("existing_loan_amount"));
+  assert.ok(
+    profile.leakage_warnings.some((warning) => warning.column === "collections_flag" && warning.severity === "block")
+  );
+  assert.ok(
+    profile.leakage_warnings.some((warning) => warning.column === "total_late_fees_charged" && warning.severity === "block")
+  );
+});
+
+test("legitimate revenue and ltv target leakage still fires", () => {
+  const churnCsv = [
+    "customer_id,total_lifetime_revenue,lifetime_revenue_to_date,support_tickets,churn",
+    "c1,1000,900,1,0",
+    "c2,2000,1800,3,0",
+    "c3,120,120,8,1",
+    "c4,3000,2500,0,0",
+    "c5,80,80,7,1"
+  ].join("\n");
+  const churnProfile = analyzeDataset({
+    csvText: churnCsv,
+    filename: "churn_revenue.csv",
+    idea: "Predict customer churn based on total lifetime revenue and support ticket history."
+  });
+
+  assert.ok(churnProfile.leakage_warnings.some((warning) => warning.column === "lifetime_revenue_to_date"));
+
+  const revenueTargetCsv = [
+    "customer_id,cumulative_revenue,support_tickets,monthly_recurring_revenue_churned",
+    "c1,1000,1,0",
+    "c2,1200,2,0",
+    "c3,150,8,1",
+    "c4,2000,0,0",
+    "c5,90,7,1"
+  ].join("\n");
+  const revenueTargetProfile = analyzeDataset({
+    csvText: revenueTargetCsv,
+    filename: "revenue_target.csv",
+    idea: "Build a customer model."
+  });
+
+  assert.ok(revenueTargetProfile.leakage_warnings.some((warning) => warning.column === "cumulative_revenue"));
 });

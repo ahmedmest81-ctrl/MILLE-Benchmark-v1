@@ -203,8 +203,9 @@ function targetQuantityTerms(targetText = "") {
 
 export function leakageWarnings(columns, targetName, { targetPhrase = "" } = {}) {
   const targetText = `${targetName || ""} ${targetPhrase || ""}`.toLowerCase();
+  const quantityText = String(targetName || targetPhrase || "").toLowerCase();
   const targetLabel = targetName || targetPhrase || "outcome";
-  const quantityTerms = targetQuantityTerms(targetText);
+  const quantityTerms = targetQuantityTerms(quantityText);
   const temporalTarget = /\b(next|future|forecast|after|later|quarter|month|week)\b/.test(targetText);
   const readmissionTarget = /\breadmit|readmission|readmitted_?30d\b/.test(targetText);
   const admissionTimePrediction = /\bat admission|admission time|before discharge|on admission|intake\b/.test(targetText);
@@ -214,15 +215,15 @@ export function leakageWarnings(columns, targetName, { targetPhrase = "" } = {})
       const lower = column.name.toLowerCase();
       const warnings = [];
       const aggregate = /(lifetime|total|cumulative|to_?date|sum|ltv|overall)/.test(lower);
-      const relatedQuantity =
-        quantityTerms.size === 0 || Array.from(quantityTerms).some((term) => lower.includes(term));
+      const quantityOverlap = Array.from(quantityTerms).some((term) => lower.includes(term));
+      const aggregateRelatedQuantity = quantityTerms.size === 0 || quantityOverlap;
 
       if (aggregate) {
-        const severity = relatedQuantity ? "block" : "warn";
+        const severity = aggregateRelatedQuantity ? "block" : "warn";
         warnings.push({
           column: column.name,
           severity,
-          reason: relatedQuantity
+          reason: aggregateRelatedQuantity
             ? `${column.name} looks like an aggregate of the target ${targetLabel} and can leak post-outcome information.`
             : `${column.name} has an aggregate-style name; confirm it does not summarize activity that only exists after the outcome (${targetLabel}) occurs.`
         });
@@ -247,7 +248,7 @@ export function leakageWarnings(columns, targetName, { targetPhrase = "" } = {})
         return warnings;
       }
 
-      if (relatedQuantity && /\b(current|now|present|mrr|revenue|sales|value|amount)\b/.test(lower.replace(/_/g, " "))) {
+      if (quantityOverlap && /\b(current|now|present|mrr|revenue|sales|value|amount)\b/.test(lower.replace(/_/g, " "))) {
         warnings.push({
           column: column.name,
           severity: "warn",
