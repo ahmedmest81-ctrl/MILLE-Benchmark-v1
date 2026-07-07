@@ -630,6 +630,48 @@ function targetLeakage({ claims, profile, decision }) {
   });
 }
 
+function trainTestOverlapGate({ profile }) {
+  const overlap = profile?.holdout_overlap || null;
+  const exactDuplicates = overlap?.exact_duplicate_rows || 0;
+  const featureDuplicates = overlap?.feature_duplicate_rows || 0;
+  const extraFeatureDuplicates = Math.max(0, featureDuplicates - exactDuplicates);
+  const fired = exactDuplicates > 0 || extraFeatureDuplicates > 0;
+
+  if (!fired) {
+    return result({
+      id: "train-test-overlap-gate",
+      fired: false,
+      message: "No duplicate train/holdout row overlap was detected.",
+      computed: {
+        holdout_overlap: overlap,
+        advisory_policy:
+          "warn-severity quality_warnings stay advisory-only by design; block-severity holdout contamination routes through this gate."
+      }
+    });
+  }
+
+  const duplicateText = [
+    exactDuplicates > 0 ? `${exactDuplicates} exact duplicate holdout row(s)` : "",
+    extraFeatureDuplicates > 0 ? `${extraFeatureDuplicates} additional feature-duplicate holdout row(s)` : ""
+  ].filter(Boolean);
+
+  return result({
+    id: "train-test-overlap-gate",
+    severity: "block",
+    fired: true,
+    message: `Holdout contamination detected: ${duplicateText.join(" and ")} overlap with training data.`,
+    computed: {
+      holdout_overlap: overlap,
+      exact_duplicate_rows: exactDuplicates,
+      feature_duplicate_rows: featureDuplicates,
+      advisory_policy:
+        "warn-severity quality_warnings stay advisory-only by design; block-severity holdout contamination routes through this gate."
+    },
+    remedy: "Rebuild the holdout set so no rows or non-target feature fingerprints overlap with training data, then re-profile the train/holdout pair.",
+    questions: ["Can you provide a de-duplicated holdout file?"]
+  });
+}
+
 function profileColumn(profile, field) {
   return (profile?.columns || []).find((column) => String(column.name).toLowerCase() === String(field).toLowerCase()) || null;
 }
@@ -770,6 +812,7 @@ export function evaluateBlueprint({ claims = {}, profile = null, draft = {}, gat
     metricValidity({ claims, profile, decision }),
     splitValidity({ claims, profile, decision }),
     targetLeakage({ claims, profile, decision }),
+    trainTestOverlapGate({ profile }),
     identifiableTargetGate({ claims, profile, decision, projectType }),
     dataContractGate({ claims, profile, decision })
   ].map((check) => resolveGate(check, answers, decision, { profile }));

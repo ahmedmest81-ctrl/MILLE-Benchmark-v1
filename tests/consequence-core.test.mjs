@@ -4,6 +4,7 @@ import test from "node:test";
 import { generateBlueprint } from "../blueprint-engine.mjs";
 import { analyzeDataset } from "../dataset-profiler.mjs";
 import { parseIdeaClaims } from "../idea-claims.mjs";
+import { callTool } from "../mcp-server.mjs";
 
 function imbalancedCsv() {
   const rows = ["customer_id,usage_minutes,plan,churn"];
@@ -14,6 +15,45 @@ function imbalancedCsv() {
 
 const fraudNoCsvDemoIdea =
   "Detect fraudulent transactions from our payments table with timestamp, amount, merchant_id, and a is_fraud label. 0.7% of transactions are fraud. I want the model to be accurate.";
+
+const overlapIdea = "Predict whether a loan applicant will default, using applicant demographics and credit history.";
+
+const overlapTrainCsv = [
+  "applicant_id,age,zip_code,email,credit_score,constant_flag,default_within_12m",
+  "A001,34,10001,a@example.com,650,yes,0",
+  "A001,34,10001,a@example.com,650,yes,1",
+  "A002,45,10002,b@example.com,720,yes,0",
+  "A002,45,10002,b@example.com,720,yes,0",
+  "A003,29,10003,c@example.com,580,yes,1",
+  "A004,52,10004,d@example.com,760,yes,0",
+  "A005,38,10005,e@example.com,610,yes,1",
+  "A005,38,10005,e@example.com,610,yes,1",
+  "A006,41,10006,f@example.com,690,yes,0",
+  "A007,25,10007,g@example.com,560,yes,1"
+].join("\n");
+
+const contaminatedHoldoutCsv = [
+  "applicant_id,age,zip_code,email,credit_score,constant_flag,default_within_12m",
+  "A001,34,10001,a@example.com,650,yes,1",
+  "A010,30,10010,h@example.com,600,yes,0"
+].join("\n");
+
+const cleanHoldoutCsv = [
+  "applicant_id,age,zip_code,email,credit_score,constant_flag,default_within_12m",
+  "A010,30,10010,h@example.com,600,yes,0",
+  "A011,36,10011,i@example.com,640,yes,1"
+].join("\n");
+
+function overlapGate(blueprint) {
+  return blueprint.consequences.all.find((gate) => gate.id === "train-test-overlap-gate");
+}
+
+function overlapGateAnswers() {
+  return {
+    group_split_column: "applicant_id",
+    input_validation_acknowledged: true
+  };
+}
 
 test("fraud idea without CSV blocks accuracy from claimed positive rate", () => {
   const idea = "0.7% of transactions are fraud. I want the model to be accurate.";
@@ -158,6 +198,112 @@ test("fraud CSV wins over claimed checks and blocks accuracy", () => {
   assert.equal(blueprint.consequences.verdict, "needs_resolution");
   assert.equal(blueprint.decision.primary_metric, "average_precision");
   assert.match(blueprint.files["train.py"], /average_precision_score/);
+});
+
+test("train-test overlap gate blocks contaminated holdout files", () => {
+  const profile = analyzeDataset({
+    csvText: overlapTrainCsv,
+    filename: "train.csv",
+    holdoutCsvText: contaminatedHoldoutCsv,
+    holdoutFilename: "holdout.csv",
+    idea: overlapIdea
+  });
+  const blueprint = generateBlueprint({
+    idea: overlapIdea,
+    task: "classification",
+    audience: "technical",
+    dataset_profile: profile,
+    gate_answers: overlapGateAnswers()
+  });
+  const gate = overlapGate(blueprint);
+
+  assert.equal(profile.holdout_overlap.exact_duplicate_rows, 1);
+  assert.ok(profile.quality_warnings.some((warning) => warning.column === "train_test_overlap" && warning.severity === "block"));
+  assert.equal(gate.fired, true);
+  assert.equal(gate.severity, "block");
+  assert.ok(blueprint.consequences.blocking.some((block) => block.id === "train-test-overlap-gate"));
+  assert.match(gate.computed.advisory_policy, /warn-severity quality_warnings stay advisory-only/i);
+});
+
+test("train-test overlap gate is not applicable without holdout data", () => {
+  const profile = analyzeDataset({ csvText: overlapTrainCsv, filename: "train.csv", idea: overlapIdea });
+  const blueprint = generateBlueprint({
+    idea: overlapIdea,
+    task: "classification",
+    audience: "technical",
+    dataset_profile: profile,
+    gate_answers: overlapGateAnswers()
+  });
+  const gate = overlapGate(blueprint);
+
+  assert.equal(profile.holdout_overlap, null);
+  assert.equal(gate.fired, false);
+  assert.equal(blueprint.consequences.blocking.some((block) => block.id === "train-test-overlap-gate"), false);
+});
+
+test("train-test overlap gate does not fire for distinct holdout rows", () => {
+  const profile = analyzeDataset({
+    csvText: overlapTrainCsv,
+    filename: "train.csv",
+    holdoutCsvText: cleanHoldoutCsv,
+    holdoutFilename: "holdout.csv",
+    idea: overlapIdea
+  });
+  const blueprint = generateBlueprint({
+    idea: overlapIdea,
+    task: "classification",
+    audience: "technical",
+    dataset_profile: profile,
+    gate_answers: overlapGateAnswers()
+  });
+  const gate = overlapGate(blueprint);
+
+  assert.notEqual(profile.holdout_overlap, null);
+  assert.equal(profile.holdout_overlap.exact_duplicate_rows, 0);
+  assert.equal(profile.holdout_overlap.feature_duplicate_rows, 0);
+  assert.equal(gate.fired, false);
+  assert.equal(blueprint.consequences.blocking.some((block) => block.id === "train-test-overlap-gate"), false);
+});
+
+test("train-test overlap gate fails score and export readiness", async () => {
+  const profileResponse = await callTool("mille_profile_dataset", {
+    csv_text: overlapTrainCsv,
+    filename: "train.csv",
+    holdout_csv_text: contaminatedHoldoutCsv,
+    holdout_filename: "holdout.csv",
+    idea: overlapIdea
+  });
+  const profile = profileResponse.structuredContent.profile;
+  const blueprintResponse = await callTool("mille_generate_blueprint", {
+    idea: overlapIdea,
+    task: "classification",
+    audience: "technical",
+    dataset_profile: profile,
+    gate_answers: overlapGateAnswers()
+  });
+  const blueprint = blueprintResponse.structuredContent.blueprint;
+  const scoreResponse = await callTool("mille_score_blueprint", { blueprint });
+  const exportResponse = await callTool("mille_export_project", {
+    idea: overlapIdea,
+    task: "classification",
+    audience: "technical",
+    dataset_profile: profile,
+    gate_answers: overlapGateAnswers(),
+    include_zip_base64: true
+  });
+
+  assert.ok(blueprint.consequences.blocking.some((block) => block.id === "train-test-overlap-gate"));
+  assert.notEqual(scoreResponse.structuredContent.verdict, "ready");
+  assert.ok(scoreResponse.structuredContent.score < 100);
+  assert.equal(
+    scoreResponse.structuredContent.checks.find((check) => check.id === "no_blocking_gates").passed,
+    false
+  );
+  assert.equal(exportResponse.structuredContent.export_allowed, false);
+  assert.equal("zip_base64" in exportResponse.structuredContent, false);
+  assert.ok(
+    exportResponse.structuredContent.blocking_gates.some((gate) => gate.id === "train-test-overlap-gate")
+  );
 });
 
 test("revenue idea without CSV blocks random split and aggregate leakage", () => {
