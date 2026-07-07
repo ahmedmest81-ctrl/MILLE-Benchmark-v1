@@ -35,19 +35,55 @@ const agentTaskInputSchema = {
       type: "object",
       additionalProperties: true,
       properties: {
-        false_negative_cost: { type: "number", minimum: 0 },
-        false_positive_cost: { type: "number", minimum: 0 },
-        minimum_recall: { type: "number", minimum: 0, maximum: 1 },
-        cutoff_date: { type: "string" },
-        prediction_horizon: { type: "string" },
-        group_split_column: { type: "string" },
-        input_validation_acknowledged: { type: "boolean" },
+        false_negative_cost: {
+          type: "number",
+          minimum: 0,
+          description:
+            "Business cost of a false negative. Supply both cost fields together with minimum_recall to resolve the metric-validity gate when it fires on severe class imbalance."
+        },
+        false_positive_cost: {
+          type: "number",
+          minimum: 0,
+          description:
+            "Business cost of a false positive. Supply both cost fields together with minimum_recall to resolve the metric-validity gate when it fires on severe class imbalance."
+        },
+        minimum_recall: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description:
+            "Minimum acceptable recall in (0, 1]. Supplied together with false_negative_cost and false_positive_cost to resolve metric-validity."
+        },
+        cutoff_date: {
+          type: "string",
+          description:
+            "ISO date (YYYY-MM-DD) separating train from test. Resolves the temporal component of split-validity. Must fall strictly inside the profiled date column's observed range, or the gate stays blocking with a range-mismatch message."
+        },
+        prediction_horizon: {
+          type: "string",
+          description:
+            "Free-text prediction horizon, such as '12 months'. Alternative or companion to cutoff_date for resolving split-validity's temporal component."
+        },
+        group_split_column: {
+          type: "string",
+          description:
+            "Name of the repeated-entity or group column to use for group-aware validation. Resolves the group component of split-validity. Should match a name in a prior response's consequences computed group_signals."
+        },
+        input_validation_acknowledged: {
+          type: "boolean",
+          description:
+            "Set true to acknowledge that generated input-validation code from data-contract-gate is a required implementation artifact you will actually wire in."
+        },
         leakage_field_known_before_prediction: {
           type: "object",
+          description:
+            "Map of column name to boolean, declaring whether each blocked leakage column is known before prediction time. Keys must match target-leakage computed blocked_columns from a prior response. false excludes the column from features; true asserts it is safe to keep.",
           additionalProperties: { type: "boolean" }
         },
         accepted_gate_ids: {
           type: "array",
+          description:
+            "List of gate ids, such as 'train-test-overlap-gate', to explicitly accept as a known unresolved risk instead of fixing them. Works for any gate, including ones with no other resolution path.",
           items: { type: "string" }
         }
       }
@@ -58,12 +94,14 @@ const agentTaskInputSchema = {
 export const tools = [
   {
     name: "mille_generate_blueprint",
-    description: "Generate a MILLE ML system blueprint from a plain-language project idea.",
+    description:
+      "Generate a MILLE ML blueprint (decision, consequence gates, and runnable train/preprocessing/schema files) from a plain-language idea, optionally grounded in a profiled dataset. Check the returned blueprint's consequences.blocking array and consequences.verdict before treating the returned files as usable: a non-empty consequences.blocking array means the generated code is not safe to run as-is and may train on leaked features, use an invalid split, or fail immediately by design. Re-call this tool with gate_answers supplying what each blocking gate's questions ask for, or accepted_gate_ids to explicitly accept a risk, until consequences.blocking is empty.",
     inputSchema: agentTaskInputSchema
   },
   {
     name: "mille_profile_dataset",
-    description: "Profile CSV text and infer target, task type, feature groups, leakage warnings, and executable baselines.",
+    description:
+      "Profile CSV text to infer the target, task type, feature groups, and known-issue signals (leakage_warnings, quality_warnings, split_warnings, holdout_overlap) before generating a blueprint. Call this before mille_generate_blueprint or mille_export_project whenever real training data exists: several consequence gates, including group/entity leakage, statistical leakage, and train-test overlap, only activate when a real dataset_profile is supplied; idea text alone cannot detect them. Pass the returned profile object verbatim as dataset_profile in later calls; do not hand-construct one. Optionally supply holdout_csv_text and holdout_filename to check a separate holdout file for row-level overlap with training data.",
     inputSchema: {
       type: "object",
       required: ["csv_text"],
@@ -79,7 +117,8 @@ export const tools = [
   },
   {
     name: "mille_search_knowledge",
-    description: "Retrieve curated ML knowledge chunks used by MILLE for source-backed blueprint reasoning.",
+    description:
+      "Retrieve curated ML knowledge chunks (definitions, pitfalls, formulas) used to ground blueprint reasoning in mille_generate_blueprint. task_type filters results, and limit caps the count. Informational only: this tool returns entries and does not affect consequence gates or scoring.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -96,7 +135,8 @@ export const tools = [
   },
   {
     name: "mille_validate_contract",
-    description: "Validate a MILLE blueprint or dataset profile against the public agent contracts.",
+    description:
+      "Validate a blueprint or dataset profile object against MILLE's public agent contract schema. Set kind to \"blueprint\" or \"dataset_profile\" to match the object passed as value.",
     inputSchema: {
       type: "object",
       required: ["kind", "value"],
@@ -109,7 +149,8 @@ export const tools = [
   },
   {
     name: "mille_score_blueprint",
-    description: "Score a generated blueprint for agent readiness using MILLE contract, gate, data, and knowledge checks.",
+    description:
+      "Score a blueprint's agent-readiness (0-100; verdict ready, needs_review, or not_ready). blueprint must be the structuredContent.blueprint object returned by mille_generate_blueprint, not the full tool response envelope. A ready verdict requires zero unresolved blocking gates on the blueprint you pass in, so score after resolving gates, not before, or expect and trust a reduced score.",
     inputSchema: {
       type: "object",
       required: ["blueprint"],
@@ -121,7 +162,8 @@ export const tools = [
   },
   {
     name: "mille_export_project",
-    description: "Generate a starter project manifest, and optionally a base64 ZIP, from a MILLE blueprint request.",
+    description:
+      "Generate a starter project manifest, and optionally a base64 ZIP, from the same inputs as mille_generate_blueprint. export_allowed is false and no ZIP is produced whenever any consequence gate is still blocking; check blocking_gates in the response before using the export. dataset_csv only embeds the given CSV into the exported project's data/ folder: it is not analyzed for leakage, group structure, or train-test overlap. To get real dataset-aware gate coverage in the export, call mille_profile_dataset first, optionally with holdout_csv_text, and pass its returned profile as dataset_profile. Supplying dataset_csv alone silently skips all dataset-derived consequence checks.",
     inputSchema: {
       type: "object",
       required: ["idea"],
