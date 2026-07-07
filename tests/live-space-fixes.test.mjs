@@ -37,6 +37,18 @@ p006,2026-01-06,2026-01-11,76,5,5,cardiac,1
 p007,2026-01-07,2026-01-10,59,1,3,orthopedic,0
 p008,2026-01-08,2026-01-15,84,6,7,pulmonary,1`;
 
+const loanDefaultCsv = `applicant_id,age,income,credit_score,existing_loan_amount,application_date,months_since_last_late_payment,total_late_fees_charged,collections_flag,default_within_12m
+1001,34,52000,650,12000,2024-01-15,3,0,0,0
+1002,41,87000,720,20000,2024-01-20,1,0,0,0
+1003,29,31000,580,8000,2024-02-02,1,150,1,1
+1004,52,99000,760,24000,2024-02-10,2,0,0,0
+1005,38,40000,610,10000,2024-02-14,2,80,1,1
+1006,46,68000,700,15000,2024-02-21,0,0,0,0
+1007,25,28000,560,5000,2024-03-05,0,220,1,1
+1008,57,91000,740,22000,2024-03-12,4,0,0,0
+1009,31,61000,690,13000,2024-03-18,1,0,0,0
+1010,44,73000,710,18000,2024-03-25,2,0,0,0`;
+
 test("fraud CSV exposes 85 percent majority baseline and blocks metric guidance", () => {
   const idea = "Build a fraud detection risk scoring blueprint. The target is is_fraud.";
   const profile = analyzeDataset({ csvText: fraudCsv, filename: "fraud.csv", idea });
@@ -77,4 +89,60 @@ test("plain hospital prompt target is not leaked into generated FEATURES", () =>
   assert.equal(claims.resolved_target, "readmitted_30d");
   assert.equal(blueprint.decision.target, "readmitted_30d");
   assert.doesNotMatch(featureBlock, /readmitted_30d/);
+});
+
+test("within-duration idea language triggers temporal validation", () => {
+  const idea =
+    "Predict whether a bank loan applicant will default within 12 months from age, income, credit_score, existing_loan_amount, and application_date.";
+  const claims = parseIdeaClaims(idea);
+  const blueprint = generateBlueprint({ idea, task: "classification", audience: "technical" });
+
+  assert.equal(claims.has_time_language, true);
+  assert.equal(blueprint.decision.split_strategy, "temporal");
+  assert.ok(blueprint.consequences.blocking.some((item) => item.id === "split-validity"));
+  assert.match(blueprint.files["train.py"], /TimeSeriesSplit/);
+  assert.doesNotMatch(blueprint.files["train.py"], /train_test_split/);
+});
+
+test("value-based leakage detection catches target proxies and respects confirmed exclusions", () => {
+  const idea =
+    "Predict whether a bank loan applicant will default within 12 months from age, income, credit_score, existing_loan_amount, application_date, months_since_last_late_payment, total_late_fees_charged, and collections_flag.";
+  const profile = analyzeDataset({ csvText: loanDefaultCsv, filename: "loan_default.csv", idea });
+  const warningColumns = profile.leakage_warnings.map((warning) => warning.column);
+
+  assert.ok(
+    profile.leakage_warnings.some((warning) => warning.column === "collections_flag" && warning.severity === "block")
+  );
+  assert.ok(
+    profile.leakage_warnings.some((warning) => warning.column === "total_late_fees_charged" && warning.severity === "block")
+  );
+  assert.ok(warningColumns.includes("existing_loan_amount"));
+
+  const blueprint = generateBlueprint({
+    idea,
+    task: "classification",
+    audience: "technical",
+    dataset_profile: profile,
+    gate_answers: {
+      cutoff_date: "2024-03-01",
+      input_validation_acknowledged: true,
+      leakage_field_known_before_prediction: {
+        collections_flag: false,
+        total_late_fees_charged: false
+      }
+    }
+  });
+  const resolvedLeakage = blueprint.consequences.resolved.find((item) => item.id === "target-leakage");
+
+  assert.ok(resolvedLeakage);
+  assert.deepEqual(resolvedLeakage.resolution_answers, {
+    collections_flag: false,
+    total_late_fees_charged: false
+  });
+  assert.ok(!blueprint.decision.features.includes("collections_flag"));
+  assert.ok(!blueprint.decision.features.includes("total_late_fees_charged"));
+  assert.ok(blueprint.decision.features.includes("existing_loan_amount"));
+  assert.doesNotMatch(blueprint.files["train.py"], /"collections_flag"/);
+  assert.doesNotMatch(blueprint.files["train.py"], /"total_late_fees_charged"/);
+  assert.match(blueprint.files["preprocessing.py"], /"existing_loan_amount"/);
 });

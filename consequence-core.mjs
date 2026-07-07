@@ -356,8 +356,15 @@ export function buildSplitValidityCheck({
   });
 }
 
-function profileLeakageBlocks(profile) {
-  return (profile?.leakage_warnings || []).filter((warning) => warning.severity === "block");
+function isActionableLeakageWarn(warning) {
+  const reason = String(warning?.reason || "");
+  return /aggregate-style name|alone predicts|Column name suggests/i.test(reason);
+}
+
+function profileLeakageCandidates(profile) {
+  return (profile?.leakage_warnings || []).filter(
+    (warning) => warning.severity === "block" || (warning.severity === "warn" && isActionableLeakageWarn(warning))
+  );
 }
 
 function claimLeakageBlocks(claims) {
@@ -417,7 +424,7 @@ function splitValidity({ claims, profile, decision }) {
 }
 
 function targetLeakage({ claims, profile, decision }) {
-  const blocks = profile ? profileLeakageBlocks(profile) : claimLeakageBlocks(claims);
+  const blocks = profile ? profileLeakageCandidates(profile) : claimLeakageBlocks(claims);
   if (!blocks.length) {
     return result({
       id: "target-leakage",
@@ -432,9 +439,10 @@ function targetLeakage({ claims, profile, decision }) {
   decision.features = decision.features.filter((feature) => !blockedSet.has(String(feature).toLowerCase()));
   decision.confidence = "needs_resolution";
   const target = decision.target || claims.target_phrase || "target";
+  const severity = blocks.some((warning) => warning.severity === "block") ? "block" : "warn";
   return result({
     id: "target-leakage",
-    severity: "block",
+    severity,
     fired: true,
     message: `Remove leakage column(s) ${blockedColumns.join(", ")} before predicting ${target}.`,
     computed: { blocked_columns: blockedColumns, warnings: blocks },

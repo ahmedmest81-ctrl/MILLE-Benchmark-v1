@@ -217,11 +217,14 @@ export function leakageWarnings(columns, targetName, { targetPhrase = "" } = {})
       const relatedQuantity =
         quantityTerms.size === 0 || Array.from(quantityTerms).some((term) => lower.includes(term));
 
-      if (aggregate && relatedQuantity) {
+      if (aggregate) {
+        const severity = relatedQuantity ? "block" : "warn";
         warnings.push({
           column: column.name,
-          severity: "block",
-          reason: `${column.name} looks like an aggregate of the target ${targetLabel} and can leak post-outcome information.`
+          severity,
+          reason: relatedQuantity
+            ? `${column.name} looks like an aggregate of the target ${targetLabel} and can leak post-outcome information.`
+            : `${column.name} has an aggregate-style name; confirm it does not summarize activity that only exists after the outcome (${targetLabel}) occurs.`
         });
         return warnings;
       }
@@ -299,6 +302,87 @@ function missingnessLeakageWarnings(columns, rows, targetName) {
             }
           ]
         : [];
+    });
+}
+
+function normalizeCell(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function singleColumnLookupAccuracy(columnValues, targetValues) {
+  const pairs = [];
+  for (let index = 0; index < columnValues.length; index += 1) {
+    const value = normalizeCell(columnValues[index]);
+    const target = normalizeCell(targetValues[index]);
+    if (isMissing(value) || isMissing(target)) continue;
+    pairs.push([value, target]);
+  }
+  if (pairs.length < 5) return null;
+
+  const groups = new Map();
+  for (const [value, target] of pairs) {
+    if (!groups.has(value)) groups.set(value, new Map());
+    const counts = groups.get(value);
+    counts.set(target, (counts.get(target) || 0) + 1);
+  }
+
+  let correct = 0;
+  for (const counts of groups.values()) {
+    correct += Math.max(...counts.values());
+  }
+  return correct / pairs.length;
+}
+
+function majorityBaselineAccuracy(targetValues) {
+  const counts = new Map();
+  let total = 0;
+  for (const value of targetValues) {
+    const target = normalizeCell(value);
+    if (isMissing(target)) continue;
+    counts.set(target, (counts.get(target) || 0) + 1);
+    total += 1;
+  }
+  if (!total) return null;
+  return Math.max(...counts.values()) / total;
+}
+
+export function valueBasedLeakageWarnings(columns, rows, targetName) {
+  if (!targetName) return [];
+  const targetValues = rows.map((row) => row.find(([header]) => header === targetName)?.[1] ?? "");
+  const distinctTargets = new Set(targetValues.map(normalizeCell).filter((value) => !isMissing(value)));
+  if (distinctTargets.size < 2 || distinctTargets.size > 20) return [];
+
+  const baseline = majorityBaselineAccuracy(targetValues);
+  if (baseline == null) return [];
+  const cardinalityCap = Math.max(2, Math.floor(rows.length * 0.5));
+
+  return columns
+    .filter((column) => column.name !== targetName && column.kind !== "id" && column.kind !== "date")
+    .filter((column) => column.unique_count <= cardinalityCap)
+    .flatMap((column) => {
+      const columnValues = rows.map((row) => row.find(([header]) => header === column.name)?.[1] ?? "");
+      const accuracy = singleColumnLookupAccuracy(columnValues, targetValues);
+      if (accuracy == null) return [];
+      const lift = accuracy - baseline;
+      if (accuracy >= 0.97 && lift >= 0.1) {
+        return [
+          {
+            column: column.name,
+            severity: "block",
+            reason: `${column.name} alone reproduces ${targetName} with ~${(accuracy * 100).toFixed(1)}% accuracy on this sample (majority baseline ${(baseline * 100).toFixed(1)}%). This is a strong statistical signature of target leakage.`
+          }
+        ];
+      }
+      if (accuracy >= 0.9 && lift >= 0.08) {
+        return [
+          {
+            column: column.name,
+            severity: "warn",
+            reason: `${column.name} alone predicts ${targetName} with ~${(accuracy * 100).toFixed(1)}% accuracy on this sample (majority baseline ${(baseline * 100).toFixed(1)}%); confirm this value is known before prediction.`
+          }
+        ];
+      }
+      return [];
     });
 }
 
@@ -516,9 +600,9 @@ export function analyzeDataset({ csvText, filename = "uploaded.csv", idea = "" }
       reason: check.executable_consequence
     }));
 
-  const leakage = leakageWarnings(columns, target?.name, { targetPhrase: idea }).concat(
-    missingnessLeakageWarnings(columns, rows, target?.name)
-  );
+  const leakage = leakageWarnings(columns, target?.name, { targetPhrase: idea })
+    .concat(missingnessLeakageWarnings(columns, rows, target?.name))
+    .concat(valueBasedLeakageWarnings(columns, rows, target?.name));
   const qualityWarnings = columns
     .filter((column) => column.missing_ratio > 0.4)
     .map((column) => ({

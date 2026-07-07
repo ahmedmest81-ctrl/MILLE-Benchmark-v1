@@ -250,7 +250,7 @@ export function parseIdeaClaims(ideaText = "") {
       named_columns: namedColumns,
       ...resolved,
       has_time_language:
-        /\b(next (?:quarter|month|week|\d+ (?:days|weeks|months))|over time|forecast|real[- ]?time|stream(?:s|ing)?|early warning|monitor(?:ing)?|sensor|vital signs?)\b/.test(lower) ||
+        /\b(next (?:quarter|month|week|\d+ (?:days|weeks|months))|within (?:the )?(?:next )?\d+ (?:days?|weeks?|months?|quarters?|years?)|over time|forecast|real[- ]?time|stream(?:s|ing)?|early warning|monitor(?:ing)?|sensor|vital signs?)\b/.test(lower) ||
         hasNamedDate
     };
   } catch {
