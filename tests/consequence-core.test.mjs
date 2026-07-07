@@ -27,9 +27,12 @@ test("fraud idea without CSV blocks accuracy from claimed positive rate", () => 
   assert.equal(blueprint.decision.confidence, "needs_resolution");
   assert.equal(blueprint.confidence, "Needs resolution");
   assert.notEqual(blueprint.decision.objective, "accuracy");
-  assert.match(blueprint.consequences.blocking[0].message, /0\.7%/);
-  assert.match(blueprint.consequences.blocking[0].message, /0\.993/);
-  assert.match(blueprint.consequences.blocking[0].message, /recall is 0/);
+  const metricBlock = blueprint.consequences.blocking.find((block) => block.id === "metric-validity");
+  assert.ok(metricBlock);
+  assert.match(metricBlock.message, /0\.7%/);
+  assert.match(metricBlock.message, /0\.993/);
+  assert.match(metricBlock.message, /recall is 0/);
+  assert.ok(blueprint.consequences.blocking.some((block) => block.id === "identifiable-target-gate"));
 });
 
 test("business cost answers resolve the metric-validity gate", () => {
@@ -45,13 +48,14 @@ test("business cost answers resolve the metric-validity gate", () => {
     }
   });
 
-  assert.equal(blueprint.consequences.verdict, "ok");
+  assert.equal(blueprint.consequences.verdict, "needs_resolution");
   assert.ok(!blueprint.consequences.blocking.some((item) => item.id === "metric-validity"));
+  assert.ok(blueprint.consequences.blocking.some((item) => item.id === "identifiable-target-gate"));
   assert.ok(blueprint.consequences.resolved.some((item) => item.id === "metric-validity"));
   assert.equal(blueprint.decision.threshold_policy.false_negative_cost, 500);
   assert.equal(blueprint.decision.threshold_policy.false_positive_cost, 25);
   assert.equal(blueprint.decision.threshold_policy.minimum_recall, 0.85);
-  assert.equal(blueprint.decision.confidence, "high");
+  assert.equal(blueprint.decision.confidence, "needs_resolution");
   assert.ok(!blueprint.generated_questions.some((question) => /Cost of a missed positive/.test(question)));
 });
 
@@ -182,7 +186,7 @@ test("revenue idea without CSV blocks random split and aggregate leakage", () =>
 });
 
 test("clean house price idea does not create false blocking consequences", () => {
-  const idea = "Predict house price from sqft, location, and bedrooms using an out-of-time split.";
+  const idea = "Predict house price. Table has columns property_id, sqft, location, bedrooms, price. Use an out-of-time split.";
   const blueprint = generateBlueprint({ idea, task: "auto", audience: "technical" });
 
   assert.equal(blueprint.consequences.verdict, "ok");

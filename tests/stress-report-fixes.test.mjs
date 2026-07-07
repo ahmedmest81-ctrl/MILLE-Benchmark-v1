@@ -48,6 +48,90 @@ test("learnability gate blocks vague, impossible, and non-ML requests before exp
   }
 });
 
+const ideaOnlyLoanDefault =
+  "Predict whether a bank loan applicant will default within 12 months, using applicant demographics, credit score, income, and their loan repayment history so the bank can flag high-risk applications before approval.";
+
+test("idea-only natural-language target blocks runnable training code and export", async () => {
+  const blueprint = generateBlueprint({
+    idea: ideaOnlyLoanDefault,
+    task: "classification",
+    audience: "technical"
+  });
+  const targetGate = blueprint.consequences.blocking.find((gate) => gate.id === "identifiable-target-gate");
+  const trainPy = blueprint.files["train.py"] || "";
+
+  assert.ok(targetGate);
+  assert.equal(targetGate.severity, "block");
+  assert.match(targetGate.message, /target column name could not be determined/i);
+  assert.match(trainPy, /NotImplementedError/);
+  assert.match(trainPy, /target column/i);
+  assert.doesNotMatch(trainPy, /TARGET = "whether a bank loan applicant/);
+  assert.doesNotMatch(trainPy, /FEATURES = \[\]/);
+
+  const scoreResult = await callTool("mille_score_blueprint", { blueprint });
+  assert.notEqual(scoreResult.structuredContent.verdict, "ready");
+  assert.ok(scoreResult.structuredContent.score < 100);
+  assert.equal(
+    scoreResult.structuredContent.checks.find((check) => check.id === "no_blocking_gates").passed,
+    false
+  );
+
+  const exportResult = await callTool("mille_export_project", {
+    idea: ideaOnlyLoanDefault,
+    task: "classification",
+    audience: "technical",
+    include_zip_base64: true
+  });
+  assert.equal(exportResult.structuredContent.export_allowed, false);
+  assert.equal("zip_base64" in exportResult.structuredContent, false);
+  assert.ok(
+    exportResult.structuredContent.blocking_gates.some((gate) => gate.id === "identifiable-target-gate")
+  );
+});
+
+test("idea-only named columns still resolve a runnable target", () => {
+  const blueprint = generateBlueprint({
+    idea: "Predict loan default. Table has columns applicant_id, income, credit_score, prior_defaults, defaulted.",
+    task: "classification",
+    audience: "technical"
+  });
+
+  assert.equal(blueprint.decision.target, "defaulted");
+  assert.ok(blueprint.decision.features.includes("income"));
+  assert.ok(blueprint.decision.features.includes("credit_score"));
+  assert.ok(blueprint.decision.features.includes("prior_defaults"));
+  assert.ok(!blueprint.decision.features.includes("applicant_id"));
+  assert.equal(blueprint.consequences.blocking.some((gate) => gate.id === "identifiable-target-gate"), false);
+  assert.match(blueprint.files["train.py"], /TARGET = "defaulted"/);
+  assert.doesNotMatch(blueprint.files["train.py"], /NotImplementedError/);
+});
+
+test("dataset profile target bypasses idea-only target gate", () => {
+  const csv = [
+    "applicant_id,income,credit_score,prior_defaults,defaulted",
+    "a1,52000,650,0,0",
+    "a2,31000,580,2,1",
+    "a3,76000,720,0,0",
+    "a4,28000,560,3,1"
+  ].join("\n");
+  const profile = analyzeDataset({
+    csvText: csv,
+    filename: "loans.csv",
+    idea: ideaOnlyLoanDefault
+  });
+  const blueprint = generateBlueprint({
+    idea: ideaOnlyLoanDefault,
+    task: "classification",
+    audience: "technical",
+    dataset_profile: profile
+  });
+
+  assert.equal(blueprint.decision.target, "defaulted");
+  assert.equal(blueprint.consequences.blocking.some((gate) => gate.id === "identifiable-target-gate"), false);
+  assert.match(blueprint.files["train.py"], /TARGET = "defaulted"/);
+  assert.doesNotMatch(blueprint.files["train.py"], /NotImplementedError/);
+});
+
 test("invalid gate answers do not resolve blocking gates and unknown accepts are surfaced", () => {
   const blueprint = generateBlueprint({
     idea: "Predict churn next month.",
@@ -76,9 +160,10 @@ test("risk acceptance caps confidence at medium and preserves warn verdict", () 
     }
   });
 
-  assert.equal(blueprint.consequences.verdict, "warn");
-  assert.equal(blueprint.decision.confidence, "medium");
-  assert.equal(blueprint.confidence, "Medium confidence");
+  assert.equal(blueprint.consequences.verdict, "needs_resolution");
+  assert.ok(blueprint.consequences.blocking.some((gate) => gate.id === "identifiable-target-gate"));
+  assert.equal(blueprint.decision.confidence, "needs_resolution");
+  assert.equal(blueprint.confidence, "Needs resolution");
 });
 
 test("temporal stream language fires split validity instead of a random split", () => {

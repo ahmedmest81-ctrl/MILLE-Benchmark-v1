@@ -294,6 +294,73 @@ function learnabilityGate({ claims, profile, decision }) {
   });
 }
 
+function isIdentifierLikeTarget(value) {
+  return /^[A-Za-z_][A-Za-z0-9_]{0,59}$/.test(String(value || "").trim());
+}
+
+function isNamedTarget(claims, target) {
+  const lower = String(target || "").toLowerCase();
+  return Boolean(lower && (claims.named_columns || []).some((column) => String(column).toLowerCase() === lower));
+}
+
+function identifiableTargetGate({ claims, profile, decision, projectType = "single_task" }) {
+  if (
+    projectType === "multi_component_system" ||
+    profile?.inferred?.target ||
+    !["classification", "regression", "forecasting"].includes(decision.task_type)
+  ) {
+    return result({
+      id: "identifiable-target-gate",
+      fired: false,
+      message: "The target column is identified from dataset metadata, handled by component contracts, or the task does not require a supervised target.",
+      computed: { target: profile?.inferred?.target || decision.target || null, project_type: projectType }
+    });
+  }
+
+  const target = String(decision.target || "").trim();
+  const namedTarget = isNamedTarget(claims, target);
+  const phraseTarget =
+    claims.target_phrase &&
+    target.toLowerCase() === String(claims.target_phrase).trim().toLowerCase() &&
+    !namedTarget;
+  const placeholderTarget = /^(target|label|outcome)$/i.test(target) && !namedTarget;
+  const invalidShape = !isIdentifierLikeTarget(target);
+  const fired = !namedTarget && (phraseTarget || placeholderTarget || invalidShape);
+
+  if (!fired) {
+    return result({
+      id: "identifiable-target-gate",
+      fired: false,
+      message: "The target column name is identifier-shaped and was not derived from a raw target phrase.",
+      computed: { target, named_target: namedTarget }
+    });
+  }
+
+  decision.confidence = "needs_resolution";
+  decision.target_identifier = {
+    status: "unresolved",
+    target,
+    target_phrase: claims.target_phrase || null,
+    named_columns: claims.named_columns || []
+  };
+  return result({
+    id: "identifiable-target-gate",
+    severity: "block",
+    fired: true,
+    message: "The exact target column name could not be determined from the idea alone.",
+    computed: {
+      target,
+      target_phrase: claims.target_phrase || null,
+      named_columns: claims.named_columns || [],
+      invalid_shape: invalidShape,
+      phrase_target: Boolean(phraseTarget),
+      placeholder_target: Boolean(placeholderTarget)
+    },
+    remedy: "Name the exact target column, or attach/profile the dataset columns before generating runnable training code.",
+    questions: ["What exact dataset column contains the target label?", "Can you attach or describe the dataset schema?"]
+  });
+}
+
 function csvClassificationCheck(profile) {
   return (profile?.executable_checks || []).find((check) => check.kind === "classification_majority_baseline") || null;
 }
@@ -583,7 +650,7 @@ function dataContractGate({ profile, decision }) {
   });
 }
 
-export function evaluateBlueprint({ claims = {}, profile = null, draft = {}, gateAnswers = {} } = {}) {
+export function evaluateBlueprint({ claims = {}, profile = null, draft = {}, gateAnswers = {}, projectType = "single_task" } = {}) {
   const decision = cloneDecision(draft);
   const answers = cleanGateAnswers(gateAnswers);
   const checks = [
@@ -591,6 +658,7 @@ export function evaluateBlueprint({ claims = {}, profile = null, draft = {}, gat
     metricValidity({ claims, profile, decision }),
     splitValidity({ claims, profile, decision }),
     targetLeakage({ claims, profile, decision }),
+    identifiableTargetGate({ claims, profile, decision, projectType }),
     dataContractGate({ claims, profile, decision })
   ].map((check) => resolveGate(check, answers, decision));
   const generatedQuestions = [];

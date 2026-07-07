@@ -47,6 +47,13 @@ function plausibleColumnToken(token) {
   );
 }
 
+function plausibleExplicitColumnToken(token) {
+  if (!token) return false;
+  if (/^(a|an|the|and|or|with|for|to|from|predict|use|table|columns?|label|target|flag)$/.test(token)) return false;
+  if (/^(project_type|multi_component_system|single_task|decision_trace)$/.test(token)) return false;
+  return /^[a-z][a-z0-9_]*$/.test(token);
+}
+
 function extractNamedColumns(text) {
   const lower = text.toLowerCase();
   const columns = [];
@@ -58,7 +65,7 @@ function extractNamedColumns(text) {
     source
       .split(/,|\band\b/)
       .map(normalizeColumnToken)
-      .filter(plausibleColumnToken)
+      .filter(plausibleExplicitColumnToken)
       .forEach((item) => columns.push(item));
   }
 
@@ -93,7 +100,7 @@ function extractNamedColumns(text) {
 function isLabelLikeColumn(column, raw = "") {
   const lower = String(column || "").toLowerCase();
   if (/^is_/.test(lower) || /_(label|flag)$/.test(lower)) return true;
-  if (/^(target|label|class|churn|fraud|default|is_fraud)$/.test(lower)) return true;
+  if (/^(target|label|class|churn|churned|fraud|default|defaulted|is_fraud)$/.test(lower)) return true;
   const escaped = lower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`\\b(?:a|an)\\s+${escaped}\\s+(?:label|target|flag)\\b`, "i").test(raw);
 }

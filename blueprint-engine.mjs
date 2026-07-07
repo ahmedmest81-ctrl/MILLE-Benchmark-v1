@@ -1117,6 +1117,42 @@ if __name__ == "__main__":
 `;
 }
 
+function blockedNoProfileTrainPy(gate) {
+  const message =
+    gate?.message ||
+    "The exact target column could not be determined from the idea alone. Name the target column or attach a dataset profile before training.";
+  return `"""Training scaffold intentionally blocked by MILLE.
+
+${message}
+"""
+
+
+raise NotImplementedError(${JSON.stringify(message)})
+`;
+}
+
+function blockedNoProfilePreprocessingPy(gate) {
+  return `"""Preprocessing scaffold intentionally blocked by MILLE.
+
+${gate?.remedy || "Name the exact target column or attach a dataset profile before implementation."}
+"""
+
+NUMERIC_FEATURES = []
+CATEGORICAL_FEATURES = []
+TEXT_FEATURES = []
+DATE_FEATURES = []
+EXCLUDED_FEATURES = []
+`;
+}
+
+function blockedNoProfileSchema(gate) {
+  return `status: blocked
+blocking_gate: ${JSON.stringify(gate?.id || "identifiable-target-gate")}
+reason: ${JSON.stringify(gate?.message || "The exact target column could not be determined from the idea alone.")}
+required_action: ${JSON.stringify(gate?.remedy || "Name the exact target column or attach a dataset profile.")}
+`;
+}
+
 function datasetReadme(profile) {
   const warnings = [...(profile.leakage_warnings || []), ...(profile.quality_warnings || [])];
   return `# Dataset Profile
@@ -1244,13 +1280,24 @@ function reconcileVerdicts(systemVerdict = "ok", componentVerdict = "ok") {
   return componentRank > systemRank ? componentVerdict : systemVerdict;
 }
 
-function applyDatasetAwareness({ files, summary, dataContract, modelPath, taskKey, datasetProfile, decision }) {
+function unresolvedGate(consequences, id) {
+  return (consequences?.blocking || []).find((gate) => gate.id === id) || null;
+}
+
+function applyDatasetAwareness({ files, summary, dataContract, modelPath, taskKey, datasetProfile, decision, consequences }) {
   if (!datasetProfile) {
     const awareFiles = { ...files };
+    const targetGate = unresolvedGate(consequences, "identifiable-target-gate");
     if (["classification", "regression"].includes(taskKey)) {
-      awareFiles["train.py"] = genericSupervisedTrainPy(decision);
-      awareFiles["preprocessing.py"] = noProfilePreprocessingPy(decision);
-      awareFiles["schema.yaml"] = decisionSchema(decision);
+      if (targetGate) {
+        awareFiles["train.py"] = blockedNoProfileTrainPy(targetGate);
+        awareFiles["preprocessing.py"] = blockedNoProfilePreprocessingPy(targetGate);
+        awareFiles["schema.yaml"] = blockedNoProfileSchema(targetGate);
+      } else {
+        awareFiles["train.py"] = genericSupervisedTrainPy(decision);
+        awareFiles["preprocessing.py"] = noProfilePreprocessingPy(decision);
+        awareFiles["schema.yaml"] = decisionSchema(decision);
+      }
     }
     if (decision.requires_input_validation) {
       awareFiles["validation.py"] = inputValidationPy(decision);
@@ -1267,9 +1314,11 @@ function applyDatasetAwareness({ files, summary, dataContract, modelPath, taskKe
         `Target: ${decision.target || "not specified"}.`,
         `Features to use: ${(decision.features || []).join(", ") || "confirm with dataset schema"}.`,
         `Split strategy: ${decision.split_strategy}.`,
+        ...(targetGate ? [`Implementation blocked: ${targetGate.message}`] : []),
         ...dataContract
       ],
       modelPath: [
+        ...(targetGate ? [`Resolve ${targetGate.id}: ${targetGate.remedy}`] : []),
         `Use ${decision.split_strategy} validation and ${decision.primary_metric} as the primary metric.`,
         ...modelPath
       ]
@@ -1388,7 +1437,13 @@ function assembleBlueprint({ idea, task, audience, retrievedKnowledge, datasetPr
   const blueprint = BLUEPRINTS[taskKey] || BLUEPRINTS.classification;
   const projectComplexity = detectProjectComplexity({ idea, selectedTask: task, datasetProfile });
   const draft = buildDraftDecision({ idea, taskKey, datasetProfile, blueprint, claims });
-  const consequenceResult = evaluateBlueprint({ claims, profile: datasetProfile, draft, gateAnswers });
+  const consequenceResult = evaluateBlueprint({
+    claims,
+    profile: datasetProfile,
+    draft,
+    gateAnswers,
+    projectType: projectComplexity.projectType
+  });
   const { decision } = consequenceResult;
   const multiComponent = projectComplexity.projectType === "multi_component_system";
   const componentConsequences = multiComponent
@@ -1411,7 +1466,8 @@ function assembleBlueprint({ idea, task, audience, retrievedKnowledge, datasetPr
     modelPath: blueprint.path,
     taskKey,
     datasetProfile,
-    decision
+    decision,
+    consequences: consequenceResult
   });
 
   if (audience === "business") {
