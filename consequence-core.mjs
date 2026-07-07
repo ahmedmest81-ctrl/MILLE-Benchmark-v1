@@ -6,6 +6,7 @@ function cloneDecision(draft = {}) {
     objective: draft.objective || "cross_entropy",
     primary_metric: draft.primary_metric || "ROC-AUC",
     split_strategy: draft.split_strategy || "random",
+    group_split_column: draft.group_split_column || null,
     features: Array.isArray(draft.features) ? [...draft.features] : [],
     target: draft.target || null,
     confidence: draft.confidence || "high",
@@ -287,6 +288,14 @@ function resolveGate(check, answers, decision, { profile = null } = {}) {
       ...check,
       resolution_status: check.severity === "block" ? "blocking" : "open",
       resolution_note: "Acknowledge generated runtime validation or accept the risk."
+    };
+  }
+
+  if (check.id === "train-test-overlap-gate") {
+    return {
+      ...check,
+      resolution_status: "blocking",
+      resolution_note: "Rebuild the holdout set so no rows or non-target feature fingerprints overlap with training data, or explicitly accept the risk."
     };
   }
 

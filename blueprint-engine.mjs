@@ -1002,6 +1002,45 @@ function temporalSplitBlock(decision) {
     y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]`;
 }
 
+function temporalGroupSplitBlock(decision, profile = null) {
+  const dateColumns = dateLikeFeatures(decision.features || []);
+  const dateColumn = dateColumns[0] || profile?.inferred?.date_columns?.[0] || "date";
+  const groupColumn = decision?.group_split_column || profile?.inferred?.group_columns?.[0] || "group_id";
+  return `    date_column = ${JSON.stringify(dateColumn)}
+    group_column = ${JSON.stringify(groupColumn)}
+    if date_column not in frame.columns:
+        raise ValueError(f"Temporal split column {date_column!r} not found in {DATA_PATH}.")
+    if group_column not in frame.columns:
+        raise ValueError(f"Group split column {group_column!r} not found in {DATA_PATH}.")
+    split_dates = pd.to_datetime(frame[date_column], errors="coerce")
+    split_frame = frame.assign(__split_date=split_dates).dropna(subset=["__split_date"]).sort_values("__split_date")
+    group_ranges = split_frame.groupby(group_column)["__split_date"].agg(["min", "max"]).sort_values(["min", "max"])
+    if len(group_ranges) < 2:
+        raise ValueError("Temporal group split requires at least two non-empty groups with valid dates.")
+    test_group_count = max(1, int(len(group_ranges) * 0.2))
+    test_group_labels = group_ranges.tail(test_group_count).index
+    test_groups = set(test_group_labels.tolist())
+    cutoff_date = group_ranges.loc[test_group_labels, "min"].min()
+    train_mask = (~frame[group_column].isin(test_groups)) & split_dates.lt(cutoff_date)
+    test_mask = frame[group_column].isin(test_groups) & split_dates.ge(cutoff_date)
+    if not train_mask.any() or not test_mask.any():
+        splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+        sorted_index = split_frame.index
+        train_pos, test_pos = next(splitter.split(X.loc[sorted_index], y.loc[sorted_index], groups=frame.loc[sorted_index, group_column]))
+        train_idx, test_idx = sorted_index[train_pos], sorted_index[test_pos]
+        train_latest = split_dates.loc[train_idx].max()
+        test_earliest = split_dates.loc[test_idx].min()
+        train_groups = set(frame.loc[train_idx, group_column])
+        test_groups = set(frame.loc[test_idx, group_column])
+        if train_groups.intersection(test_groups) or (pd.notna(train_latest) and pd.notna(test_earliest) and train_latest > test_earliest):
+            raise ValueError("Could not construct a split that is both group-disjoint and chronological; provide a cutoff or prebuilt holdout.")
+        X_train, X_test = X.loc[train_idx], X.loc[test_idx]
+        y_train, y_test = y.loc[train_idx], y.loc[test_idx]
+    else:
+        X_train, X_test = X.loc[train_mask], X.loc[test_mask]
+        y_train, y_test = y.loc[train_mask], y.loc[test_mask]`;
+}
+
 function randomSplitBlock(classifier) {
   return `    stratify = y if ${classifier ? "True" : "False"} and y.nunique(dropna=True) > 1 else None
     X_train, X_test, y_train, y_test = train_test_split(
@@ -1024,7 +1063,8 @@ function groupSplitBlock(decision, profile = null) {
 function supervisedTrainPy(profile, taskKey, decision) {
   const target = decision?.target || profile.inferred?.target || "target";
   const classifier = taskKey === "classification";
-  const temporal = decision?.split_strategy === "temporal" || decision?.split_strategy === "temporal_group";
+  const temporal = decision?.split_strategy === "temporal";
+  const temporalGroup = decision?.split_strategy === "temporal_group";
   const group = decision?.split_strategy === "group";
   return `from pathlib import Path
 
@@ -1032,7 +1072,7 @@ import joblib
 import pandas as pd
 from sklearn.ensemble import HistGradientBoosting${classifier ? "Classifier" : "Regressor"}
 from sklearn.metrics import ${metricImport(decision || {}, classifier)}
-from sklearn.model_selection import ${group ? "GroupShuffleSplit" : temporal ? "TimeSeriesSplit" : "train_test_split"}
+from sklearn.model_selection import ${group || temporalGroup ? "GroupShuffleSplit" : temporal ? "TimeSeriesSplit" : "train_test_split"}
 from sklearn.pipeline import Pipeline
 
 from preprocessing import CATEGORICAL_FEATURES, EXCLUDED_FEATURES, NUMERIC_FEATURES, build_preprocessor
@@ -1059,7 +1099,7 @@ def main():
     columns = feature_columns(frame)
     X = frame[columns]
     y = frame[TARGET]
-${group ? groupSplitBlock(decision || {}, profile) : temporal ? temporalSplitBlock(decision || {}) : randomSplitBlock(classifier)}
+${group ? groupSplitBlock(decision || {}, profile) : temporalGroup ? temporalGroupSplitBlock(decision || {}, profile) : temporal ? temporalSplitBlock(decision || {}) : randomSplitBlock(classifier)}
 
     model = HistGradientBoosting${classifier ? "Classifier" : "Regressor"}(max_iter=250, learning_rate=0.06)
     pipeline = Pipeline([("preprocess", build_preprocessor()), ("model", model)])
@@ -1080,7 +1120,8 @@ if __name__ == "__main__":
 
 function genericSupervisedTrainPy(decision) {
   const classifier = decision.task_type === "classification";
-  const temporal = decision.split_strategy === "temporal" || decision.split_strategy === "temporal_group";
+  const temporal = decision.split_strategy === "temporal";
+  const temporalGroup = decision.split_strategy === "temporal_group";
   const group = decision.split_strategy === "group";
   return `from pathlib import Path
 
@@ -1090,7 +1131,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoosting${classifier ? "Classifier" : "Regressor"}
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import ${metricImport(decision, classifier)}
-from sklearn.model_selection import ${group ? "GroupShuffleSplit" : temporal ? "TimeSeriesSplit" : "train_test_split"}
+from sklearn.model_selection import ${group || temporalGroup ? "GroupShuffleSplit" : temporal ? "TimeSeriesSplit" : "train_test_split"}
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
@@ -1116,7 +1157,7 @@ def main():
     columns = feature_columns(frame)
     X = frame[columns]
     y = frame[TARGET]
-${group ? groupSplitBlock(decision) : temporal ? temporalSplitBlock(decision) : randomSplitBlock(classifier)}
+${group ? groupSplitBlock(decision) : temporalGroup ? temporalGroupSplitBlock(decision) : temporal ? temporalSplitBlock(decision) : randomSplitBlock(classifier)}
 
     preprocess = ColumnTransformer([
         ("cat", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("encoder", OneHotEncoder(handle_unknown="ignore"))]), columns)
@@ -1259,6 +1300,7 @@ export function buildDraftDecision({ idea = "", taskKey = "classification", data
     objective: claims.stated_objective === "accuracy" ? "accuracy" : metric.objective,
     primary_metric: claims.stated_objective === "accuracy" ? "accuracy" : metric.primary_metric,
     split_strategy: claims.stated_split || (taskKey === "forecasting" ? "temporal" : "random"),
+    group_split_column: datasetProfile ? inferred.group_columns?.[0] || null : claims.group_split_column || null,
     features: Array.from(new Set(features.filter(Boolean))),
     target: target || "target",
     confidence: confidenceValue(blueprint.confidence)

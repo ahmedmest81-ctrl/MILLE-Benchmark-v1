@@ -6,6 +6,7 @@ function emptyClaims(raw = "") {
     stated_objective_raw: null,
     stated_split: null,
     stated_split_raw: null,
+    group_split_column: null,
     target_phrase: null,
     named_columns: [],
     resolved_target: null,
@@ -180,12 +181,22 @@ function extractObjective(lower) {
 
 function extractSplit(lower) {
   const temporal = lower.match(/\b(time.?based|temporal|out.?of.?time|rolling|backtest|by date|chronological)\b/);
+  const group = lower.match(/\b(by (?:user|group|customer|account|merchant)|grouped|group[- ]aware|entity[- ]aware|by\s+[a-z][a-z0-9_]*_id)\b/);
+  if (temporal && group) return { stated_split: "temporal_group", stated_split_raw: `${temporal[1]} + ${group[1]}` };
   if (temporal) return { stated_split: "temporal", stated_split_raw: temporal[1] };
-  const group = lower.match(/\b(by (?:user|group|customer)|grouped)\b/);
   if (group) return { stated_split: "group", stated_split_raw: group[1] };
   const random = lower.match(/\b((?:normal|standard|regular|random|typical)\s+(?:train.?test\s+)?split|train.?test split)\b/);
   if (random) return { stated_split: "random", stated_split_raw: random[1] };
   return { stated_split: null, stated_split_raw: null };
+}
+
+function extractGroupSplitColumn(lower, namedColumns) {
+  const explicit =
+    lower.match(/\b(?:grouped|group[- ]aware|entity[- ]aware)\s+(?:split|validation)?\s*(?:by|on)\s+([a-z][a-z0-9_]*)\b/) ||
+    lower.match(/\bby\s+([a-z][a-z0-9_]*_id)\b/);
+  const explicitColumn = explicit?.[1] || "";
+  if (explicitColumn && namedColumns.includes(explicitColumn)) return explicitColumn;
+  return namedColumns.find((column) => isIdLikeColumn(column)) || null;
 }
 
 function extractTargetAndTask(lower) {
@@ -245,6 +256,9 @@ export function parseIdeaClaims(ideaText = "") {
     const split = extractSplit(lower);
     const target = extractTargetAndTask(lower);
     const namedColumns = extractNamedColumns(claims.raw);
+    const groupSplitColumn = ["group", "temporal_group"].includes(split.stated_split)
+      ? extractGroupSplitColumn(lower, namedColumns)
+      : null;
     const hasNamedDate = namedColumns.some((column) => /(date|time|timestamp|signup|created|_at)\b/.test(column));
     const resolved = resolveTargetAndFeatures({ ...claims, ...target, named_columns: namedColumns });
 
@@ -253,6 +267,7 @@ export function parseIdeaClaims(ideaText = "") {
       positive_rate: extractPositiveRate(lower),
       ...objective,
       ...split,
+      group_split_column: groupSplitColumn,
       ...target,
       named_columns: namedColumns,
       ...resolved,

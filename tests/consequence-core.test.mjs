@@ -221,8 +221,35 @@ test("train-test overlap gate blocks contaminated holdout files", () => {
   assert.ok(profile.quality_warnings.some((warning) => warning.column === "train_test_overlap" && warning.severity === "block"));
   assert.equal(gate.fired, true);
   assert.equal(gate.severity, "block");
+  assert.equal(gate.resolution_status, "blocking");
   assert.ok(blueprint.consequences.blocking.some((block) => block.id === "train-test-overlap-gate"));
   assert.match(gate.computed.advisory_policy, /warn-severity quality_warnings stay advisory-only/i);
+});
+
+test("train-test overlap gate can still be explicitly accepted", () => {
+  const profile = analyzeDataset({
+    csvText: overlapTrainCsv,
+    filename: "train.csv",
+    holdoutCsvText: contaminatedHoldoutCsv,
+    holdoutFilename: "holdout.csv",
+    idea: overlapIdea
+  });
+  const blueprint = generateBlueprint({
+    idea: overlapIdea,
+    task: "classification",
+    audience: "technical",
+    dataset_profile: profile,
+    gate_answers: {
+      ...overlapGateAnswers(),
+      accepted_gate_ids: ["train-test-overlap-gate"]
+    }
+  });
+  const gate = overlapGate(blueprint);
+
+  assert.equal(gate.fired, true);
+  assert.equal(gate.resolution_status, "accepted");
+  assert.equal(blueprint.consequences.blocking.some((block) => block.id === "train-test-overlap-gate"), false);
+  assert.ok(blueprint.consequences.accepted.some((item) => item.id === "train-test-overlap-gate"));
 });
 
 test("train-test overlap gate is not applicable without holdout data", () => {

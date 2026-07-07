@@ -781,7 +781,11 @@ function sensitiveAttributeWarnings(columns, rows) {
   return columns.flatMap((column) => {
     const values = rows.map((row) => row.find(([header]) => header === column.name)?.[1] ?? "");
     const warnings = [];
-    const piiEvidence = nameMatches(column.name, PII_NAME_PATTERNS) ? "PII-shaped column name" : piiValueEvidence(values);
+    const piiEvidence = nameMatches(column.name, PII_NAME_PATTERNS)
+      ? "PII-shaped column name"
+      : column.kind === "date"
+        ? ""
+        : piiValueEvidence(values);
     if (piiEvidence) {
       warnings.push({
         column: column.name,
